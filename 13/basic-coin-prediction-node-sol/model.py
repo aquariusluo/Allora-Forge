@@ -117,7 +117,7 @@ def format_data(files_btc, files_sol, data_provider):
             f"{metric}_{pair}": "last" 
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
-        } | {f"volume_{pair}": "sum" for pair in ["SOLUSDT", "BTCUSDT"]})
+        })
         print(f"Rows after resampling to {TIMEFRAME}: {len(price_df)}")
 
     # Forward-fill NaNs before adding features
@@ -126,12 +126,8 @@ def format_data(files_btc, files_sol, data_provider):
     for pair in ["SOLUSDT", "BTCUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 4):  # 3 lags
+            for lag in range(1, 11):  # 10 lags
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
-        price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=2).std()
-        price_df[f"ma3_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).mean()
-        price_df[f"macd_{pair}"] = price_df[f"close_{pair}"].ewm(span=12, adjust=False).mean() - price_df[f"close_{pair}"].ewm(span=26, adjust=False).mean()
-        price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"]
 
     price_df["hour_of_day"] = price_df.index.hour
     price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
@@ -161,15 +157,7 @@ def load_frame(file_path, timeframe):
             f"{metric}_{pair}_lag{lag}" 
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
-            for lag in range(1, 4)
-        ] + [
-            f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            for lag in range(1, 11)
         ] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
     
@@ -180,16 +168,8 @@ def load_frame(file_path, timeframe):
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 4)
-        ] + [
-            f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + ["hour_of_day"]
+        for lag in range(1, 11)
+    ] + ["hour_of_day"]
     
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -234,7 +214,7 @@ def preprocess_live_data(df_btc, df_sol):
             f"{metric}_{pair}": "last" 
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
-        } | {f"volume_{pair}": "sum" for pair in ["SOLUSDT", "BTCUSDT"]})
+        })
         print(f"Rows after resampling to {TIMEFRAME}: {len(df)}")
 
     # Forward-fill NaNs before adding features
@@ -242,12 +222,8 @@ def preprocess_live_data(df_btc, df_sol):
 
     for pair in ["SOLUSDT", "BTCUSDT"]:
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 4):
+            for lag in range(1, 11):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
-        df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=2).std()
-        df[f"ma3_{pair}"] = df[f"close_{pair}"].rolling(window=3).mean()
-        df[f"macd_{pair}"] = df[f"close_{pair}"].ewm(span=12, adjust=False).mean() - df[f"close_{pair}"].ewm(span=26, adjust=False).mean()
-        df[f"volume_{pair}"] = df[f"volume_{pair}"]
 
     df["hour_of_day"] = df.index.hour
     
@@ -264,16 +240,8 @@ def preprocess_live_data(df_btc, df_sol):
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 4)
-        ] + [
-            f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + ["hour_of_day"]
+        for lag in range(1, 11)
+    ] + ["hour_of_day"]
     
     X = df[features]
     if len(X) == 0:
@@ -319,13 +287,13 @@ def train_model(timeframe, file_path=training_price_data_path):
         
         print("\n🚀 Training XGBoost Model with Grid Search...")
         param_grid = {
-            'learning_rate': [0.01, 0.05],
-            'max_depth': [3, 5],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'max_depth': [3, 5, 7],
             'n_estimators': [100, 200],
-            'subsample': [0.7, 0.8],
+            'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7],
-            'alpha': [10, 20],
-            'lambda': [10, 20]
+            'alpha': [0, 10, 20],
+            'lambda': [1, 10, 20]
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
@@ -406,9 +374,9 @@ def get_inference(token, timeframe, region, data_provider):
     
     predicted_price = latest_price * np.exp(log_return_pred)
     
-    print(f"Predicted 8h SOL/USD Log Return: {log_return_pred:.6f}")
+    print(f"Predicted {timeframe} SOL/USD Log Return: {log_return_pred:.6f}")
     print(f"Latest SOL Price: {latest_price:.3f}")
-    print(f"Predicted SOL Price in 8h: {predicted_price:.3f}")
+    print(f"Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
     return log_return_pred
 
 if __name__ == "__main__":
