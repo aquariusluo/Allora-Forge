@@ -12,14 +12,27 @@ def generate_features_sol(data):
         "open": "first",
         "high": "max",
         "low": "min",
-        "close": "last"
+        "close": "last",
+        "volume": "sum"
     })
     features = pd.DataFrame(index=data_tf.index)
     
-    # Lagged OHLC features (10 lags)
+    # Lagged OHLC features (3 lags)
     for col in ["open", "high", "low", "close"]:
-        for i in range(1, 11):
+        for i in range(1, 4):
             features[f"{col}_SOLUSDT_lag{i}"] = data_tf[col].shift(i)
+    
+    # Volatility (2-period standard deviation)
+    features["volatility_SOLUSDT"] = data_tf["close"].rolling(window=2).std()
+    
+    # Moving average (3-period)
+    features["ma3_SOLUSDT"] = data_tf["close"].rolling(window=3).mean()
+    
+    # MACD
+    features["macd_SOLUSDT"] = data_tf["close"].ewm(span=12, adjust=False).mean() - data_tf["close"].ewm(span=26, adjust=False).mean()
+    
+    # Volume feature
+    features["volume_SOLUSDT"] = data_tf["volume"]
     
     # Hour of day
     features["hour_of_day"] = data_tf.index.hour
