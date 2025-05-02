@@ -1,0 +1,48 @@
+services:
+  inference:
+    container_name: inference
+    env_file:
+      - .env
+    build: .
+    command: python -u /app/app.py
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://inference:8000/inference/${TOKEN}"]
+      interval: 30s          # Check every 30 seconds (increased from 10s)
+      timeout: 10s          # Allow 10 seconds for response (increased from 5s)
+      retries: 20           # Retry 20 times (increased from 12, total 600s = 10 minutes)
+      start_period: 120s    # Wait 2 minutes before starting checks
+    volumes:
+      - ./inference-data:/app/data
+  
+  updater:
+    container_name: updater
+    build: .
+    environment:
+      - INFERENCE_API_ADDRESS=http://inference:8000
+    command: >
+      sh -c "
+      while true; do
+        python -u /app/update_app.py;
+        sleep 2h;
+      done
+      "
+    depends_on:
+      inference:
+        condition: service_healthy
+
+  worker:
+    container_name: worker
+    image: alloranetwork/allora-offchain-node:v0.11.0
+    volumes:
+      - ./worker-data:/data
+    depends_on:
+      inference:
+        condition: service_healthy
+    env_file:
+      - ./worker-data/env_file
+
+volumes:
+  inference-data:
+  worker-data:
