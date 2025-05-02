@@ -6,13 +6,6 @@ from datetime import datetime, timedelta
 def calculate_log_return(current_price, future_price):
     return np.log(future_price / current_price)
 
-def calculate_rsi(data, periods=14):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
 def generate_features_sol(data):
     data_8h = data.resample("8h", on="timestamp").agg({
         "open": "first",
@@ -31,12 +24,8 @@ def generate_features_sol(data):
     # Volatility (3-period standard deviation)
     features["volatility_SOLUSDT"] = data_8h["close"].rolling(window=3).std()
     
-    # Moving averages (5-period and 10-period)
+    # Moving average (5-period)
     features["ma5_SOLUSDT"] = data_8h["close"].rolling(window=5).mean()
-    features["ma10_SOLUSDT"] = data_8h["close"].rolling(window=10).mean()
-    
-    # RSI
-    features["rsi_SOLUSDT"] = calculate_rsi(data_8h["close"])
     
     # Volume feature
     features["volume_SOLUSDT"] = data_8h["volume"]
