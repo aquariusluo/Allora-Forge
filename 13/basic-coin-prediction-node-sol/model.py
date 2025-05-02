@@ -185,13 +185,13 @@ def load_frame(file_path, timeframe):
         for lag in range(1, 6)
     ] + [
         f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-    ] + [
-        f"ma7_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-    ] + [
-        f"ma21_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-    ] + [
-        f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-    ] + ["hour_of_day"]
+        ] + [
+            f"ma7_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"ma21_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + ["hour_of_day"]
     
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -269,7 +269,7 @@ def preprocess_live_data(df_btc, df_sol):
         f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
     ] + ["hour_of_day"]
     
-    X = df[features]
+    X = df[featuressegments]
     if len(X) == 0:
         raise ValueError("No valid data after preprocessing live data.")
     
@@ -340,7 +340,7 @@ def train_model(timeframe, file_path=training_price_data_path):
     if len(X_test) > 0:
         test_pred = model.predict(X_test)
         mae = mean_absolute_error(y_test, test_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, test_pred))
+        rmse = np.sqrt(mean_squared_error(y_test, test_pred)
         r2 = r2_score(y_test, test_pred)
         print(f"Test MAE (log returns): {mae:.6f}")
         print(f"Test RMSE (log returns): {rmse:.6f}")
