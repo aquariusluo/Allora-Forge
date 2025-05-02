@@ -158,4 +158,4 @@ def download_coingecko_current_day_data(token, CG_API_KEY):
 
 if __name__ == "__main__":
     download_binance_daily_data("BTCUSDT", 180, "us", "data/binance")
-    download_binance_daily_data("BERAUSDT", 180, "us", "data/binance")
+    download_binance_daily_data("SOLUSDT", 180, "us", "data/binance")
