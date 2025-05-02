@@ -35,24 +35,24 @@ def download_data(token, training_days, region, data_provider):
     else:
         raise ValueError("Unsupported data provider")
 
-def format_data(files_btc, files_bera, data_provider):
+def format_data(files_btc, files_sol, data_provider):
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
-    print(f"Raw files for BERAUSDT: {files_bera[:5]}")
-    print(f"Files for BTCUSDT: {len(files_btc)}, Files for BERAUSDT: {len(files_bera)}")
-    if not files_btc or not files_bera:
-        print("Warning: No files provided for BTCUSDT or BERAUSDT, attempting to proceed with available data.")
+    print(f"Raw files for SOLUSDT: {files_sol[:5]}")
+    print(f"Files for BTCUSDT: {len(files_btc)}, Files for SOLUSDT: {len(files_sol)}")
+    if not files_btc or not files_sol:
+        print("Warning: No files provided for BTCUSDT or SOLUSDT, attempting to proceed with available data.")
     
     if data_provider == "binance":
         files_btc = sorted([f for f in files_btc if "BTCUSDT" in os.path.basename(f) and f.endswith(".zip")])
-        files_bera = sorted([f for f in files_bera if "BERAUSDT" in os.path.basename(f) and f.endswith(".zip")])
+        files_sol = sorted([f for f in files_sol if "SOLUSDT" in os.path.basename(f) and f.endswith(".zip")])
         print(f"Filtered BTCUSDT files: {files_btc[:5]}")
-        print(f"Filtered BERAUSDT files: {files_bera[:5]}")
+        print(f"Filtered SOLUSDT files: {files_sol[:5]}")
 
-    if len(files_btc) == 0 or len(files_bera) == 0:
-        print("Warning: No valid files to process for BTCUSDT or BERAUSDT after filtering, proceeding with available data.")
+    if len(files_btc) == 0 or len(files_sol) == 0:
+        print("Warning: No valid files to process for BTCUSDT or SOLUSDT after filtering, proceeding with available data.")
 
     price_df_btc = pd.DataFrame()
-    price_df_bera = pd.DataFrame()
+    price_df_sol = pd.DataFrame()
     skipped_files = []
 
     if data_provider == "binance":
@@ -79,7 +79,7 @@ def format_data(files_btc, files_bera, data_provider):
                 skipped_files.append(file)
                 continue
 
-        for file in files_bera:
+        for file in files_sol:
             zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
             if not os.path.exists(zip_file_path):
                 print(f"File not found: {zip_file_path}")
@@ -93,43 +93,43 @@ def format_data(files_btc, files_bera, data_provider):
                     df["date"] = pd.to_datetime(df["end_time"], unit="us", errors='coerce')
                     df = df.dropna(subset=["date"])
                     df.set_index("date", inplace=True)
-                    print(f"Processed BERA file {file} with {len(df)} rows, sample dates: {df.index[:5].tolist()}")
-                    price_df_bera = pd.concat([price_df_bera, df])
+                    print(f"Processed SOL file {file} with {len(df)} rows, sample dates: {df.index[:5].tolist()}")
+                    price_df_sol = pd.concat([price_df_sol, df])
             except Exception as e:
-                print(f"Error processing BERA file {file}: {str(e)}")
+                print(f"Error processing SOL file {file}: {str(e)}")
                 skipped_files.append(file)
                 continue
 
-    if price_df_btc.empty and price_df_bera.empty:
-        print("No data processed for BTCUSDT or BERAUSDT, cannot proceed.")
+    if price_df_btc.empty and price_df_sol.empty:
+        print("No data processed for BTCUSDT or SOLUSDT, cannot proceed.")
         return
-    elif price_df_btc.empty or price_df_bera.empty:
+    elif price_df_btc.empty or price_df_sol.empty:
         print("Warning: Partial data processed (one pair missing), proceeding with available data.")
 
     print(f"Skipped files due to errors: {skipped_files}")
     price_df_btc = price_df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
-    price_df_bera = price_df_bera.rename(columns=lambda x: f"{x}_BERAUSDT")
-    price_df = pd.concat([price_df_btc, price_df_bera], axis=1)
+    price_df_sol = price_df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
+    price_df = pd.concat([price_df_btc, price_df_sol], axis=1)
     print(f"Combined DataFrame rows before resampling: {len(price_df)}")
 
     if TIMEFRAME != "1m":
         price_df = price_df.resample(TIMEFRAME).agg({
             f"{metric}_{pair}": "last" 
-            for pair in ["BERAUSDT", "BTCUSDT"]
+            for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
         })
         print(f"Rows after resampling to {TIMEFRAME}: {len(price_df)}")
 
-    for pair in ["BERAUSDT", "BTCUSDT"]:
+    for pair in ["SOLUSDT", "BTCUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 11):
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
 
     price_df["hour_of_day"] = price_df.index.hour
-    price_df["target_BERAUSDT"] = price_df["log_return_BERAUSDT"]
+    price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
     print(f"Rows before dropna: {len(price_df)}")
-    price_df = price_df.dropna(subset=["target_BERAUSDT"])
+    price_df = price_df.dropna(subset=["target_SOLUSDT"])
     print(f"Rows after dropna: {len(price_df)}")
     
     if len(price_df) == 0:
@@ -151,10 +151,10 @@ def load_frame(file_path, timeframe):
         print("Warning: Training data file is empty, attempting to proceed with available data.")
         df = pd.DataFrame(columns=[
             f"{metric}_{pair}_lag{lag}" 
-            for pair in ["BERAUSDT", "BTCUSDT"]
+            for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
             for lag in range(1, 11)
-        ] + ["hour_of_day", "target_BERAUSDT"])
+        ] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
     
     df.ffill(inplace=True)
@@ -162,13 +162,13 @@ def load_frame(file_path, timeframe):
     
     features = [
         f"{metric}_{pair}_lag{lag}" 
-        for pair in ["BERAUSDT", "BTCUSDT"]
+        for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
         for lag in range(1, 11)
     ] + ["hour_of_day"]
     
     X = df[features]
-    y = df["target_BERAUSDT"]
+    y = df["target_SOLUSDT"]
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -183,36 +183,36 @@ def load_frame(file_path, timeframe):
     
     return X_train, X_test, y_train, y_test, scaler
 
-def preprocess_live_data(df_btc, df_bera):
+def preprocess_live_data(df_btc, df_sol):
     print(f"BTC raw data rows: {len(df_btc)}, columns: {df_btc.columns.tolist()}")
-    print(f"BERA raw data rows: {len(df_bera)}, columns: {df_bera.columns.tolist()}")
+    print(f"SOL raw data rows: {len(df_sol)}, columns: {df_sol.columns.tolist()}")
 
     if "date" in df_btc.columns:
         # Remove duplicate timestamps, keeping the last entry
         df_btc = df_btc.drop_duplicates(subset="date", keep="last").set_index("date")
         if df_btc.index.has_duplicates:
             print(f"Warning: BTC data still has {df_btc.index.duplicated().sum()} duplicate timestamps after deduplication")
-    if "date" in df_bera.columns:
+    if "date" in df_sol.columns:
         # Remove duplicate timestamps, keeping the last entry
-        df_bera = df_bera.drop_duplicates(subset="date", keep="last").set_index("date")
-        if df_bera.index.has_duplicates:
-            print(f"Warning: BERA data still has {df_bera.index.duplicated().sum()} duplicate timestamps after deduplication")
+        df_sol = df_sol.drop_duplicates(subset="date", keep="last").set_index("date")
+        if df_sol.index.has_duplicates:
+            print(f"Warning: SOL data still has {df_sol.index.duplicated().sum()} duplicate timestamps after deduplication")
     
     df_btc = df_btc.rename(columns=lambda x: f"{x}_BTCUSDT" if x != "date" else x)
-    df_bera = df_bera.rename(columns=lambda x: f"{x}_BERAUSDT" if x != "date" else x)
+    df_sol = df_sol.rename(columns=lambda x: f"{x}_SOLUSDT" if x != "date" else x)
     
-    df = pd.concat([df_btc, df_bera], axis=1)
+    df = pd.concat([df_btc, df_sol], axis=1)
     print(f"Raw live data rows: {len(df)}")
 
     if TIMEFRAME != "1m":
         df = df.resample(TIMEFRAME).agg({
             f"{metric}_{pair}": "last" 
-            for pair in ["BERAUSDT", "BTCUSDT"]
+            for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
         })
         print(f"Rows after resampling to {TIMEFRAME}: {len(df)}")
 
-    for pair in ["BERAUSDT", "BTCUSDT"]:
+    for pair in ["SOLUSDT", "BTCUSDT"]:
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 11):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
@@ -225,7 +225,7 @@ def preprocess_live_data(df_btc, df_bera):
 
     features = [
         f"{metric}_{pair}_lag{lag}" 
-        for pair in ["BERAUSDT", "BTCUSDT"]
+        for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
         for lag in range(1, 11)
     ] + ["hour_of_day"]
@@ -325,33 +325,33 @@ def get_inference(token, timeframe, region, data_provider):
     
     if data_provider == "coingecko":
         df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
-        df_bera = download_coingecko_current_day_data("BERA", CG_API_KEY)
+        df_sol = download_coingecko_current_day_data("SOL", CG_API_KEY)
     else:
         try:
             df_btc = download_binance_current_day_data("BTCUSDT", region)
-            df_bera = download_binance_current_day_data("BERAUSDT", region)
+            df_sol = download_binance_current_day_data("SOLUSDT", region)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching live data: {str(e)} - Response: {e.response.text if e.response else 'No response'}")
             raise
     
-    ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=BERAUSDT'
+    ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
     response = requests.get(ticker_url)
     response.raise_for_status()
     latest_price = float(response.json()['price'])
     
-    X_new = preprocess_live_data(df_btc, df_bera)
+    X_new = preprocess_live_data(df_btc, df_sol)
     log_return_pred = loaded_model.predict(X_new[-1].reshape(1, -1))[0]
     
     predicted_price = latest_price * np.exp(log_return_pred)
     
-    print(f"Predicted 1h BERA/USD Log Return: {log_return_pred:.6f}")
-    print(f"Latest BERA Price: {latest_price:.3f}")
-    print(f"Predicted BERA Price in 1h: {predicted_price:.3f}")
+    print(f"Predicted 8h SOL/USD Log Return: {log_return_pred:.6f}")
+    print(f"Latest SOL Price: {latest_price:.3f}")
+    print(f"Predicted SOL Price in 8h: {predicted_price:.3f}")
     return log_return_pred
 
 if __name__ == "__main__":
     files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
-    files_bera = download_data("BERA", TRAINING_DAYS, REGION, DATA_PROVIDER)
-    format_data(files_btc, files_bera, DATA_PROVIDER)
+    files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
+    format_data(files_btc, files_sol, DATA_PROVIDER)
     model, scaler = train_model(TIMEFRAME)
     log_return = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER)
