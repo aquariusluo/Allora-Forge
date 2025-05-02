@@ -201,7 +201,7 @@ def preprocess_live_data(df_btc, df_sol):
     if "date" in df_sol.columns:
         df_sol = df_sol.drop_duplicates(subset="date", keep="last").set_index("date")
         if df_sol.index.has_duplicates:
-            print(f"Warning: SOL data still has {df_sol.index.duplicated().sum()} duplicate timestamps after deduplication")
+            print(f"Warning: SOL data still has {df_btc.index.duplicated().sum()} duplicate timestamps after deduplication")
     
     df_btc = df_btc.rename(columns=lambda x: f"{x}_BTCUSDT" if x != "date" else x)
     df_sol = df_sol.rename(columns=lambda x: f"{x}_SOLUSDT" if x != "date" else x)
