@@ -128,8 +128,9 @@ def format_data(files_btc, files_sol, data_provider):
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 4):  # 3 lags
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
-        price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=2).std()  # 2-period volatility
-        price_df[f"ma3_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).mean()  # 3-period MA
+        price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=2).std()
+        price_df[f"ma3_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).mean()
+        price_df[f"macd_{pair}"] = price_df[f"close_{pair}"].ewm(span=12, adjust=False).mean() - price_df[f"close_{pair}"].ewm(span=26, adjust=False).mean()
         price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"]
 
     price_df["hour_of_day"] = price_df.index.hour
@@ -166,6 +167,8 @@ def load_frame(file_path, timeframe):
         ] + [
             f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
+            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
@@ -182,6 +185,8 @@ def load_frame(file_path, timeframe):
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -241,6 +246,7 @@ def preprocess_live_data(df_btc, df_sol):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
         df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=2).std()
         df[f"ma3_{pair}"] = df[f"close_{pair}"].rolling(window=3).mean()
+        df[f"macd_{pair}"] = df[f"close_{pair}"].ewm(span=12, adjust=False).mean() - df[f"close_{pair}"].ewm(span=26, adjust=False).mean()
         df[f"volume_{pair}"] = df[f"volume_{pair}"]
 
     df["hour_of_day"] = df.index.hour
@@ -263,6 +269,8 @@ def preprocess_live_data(df_btc, df_sol):
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"macd_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -299,13 +307,13 @@ def train_model(timeframe, file_path=training_price_data_path):
             n_estimators=100,
             subsample=0.7,
             colsample_bytree=0.5,
-            alpha=20,
-            lambda_=20
+            alpha=10,
+            lambda_=10
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
     else:
-        n_splits = 5  # Reduced splits for faster training
+        n_splits = 5
         print(f"Using {n_splits} splits for cross-validation with {n_samples} samples")
         tscv = TimeSeriesSplit(n_splits=n_splits)
         
