@@ -17,6 +17,8 @@ coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 scaler_file_path = os.path.join(data_base_path, "scaler.pkl")
 
+print(f"Loaded model.py with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+
 def download_data_binance(token, training_days, region):
     files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
     print(f"Downloaded {len(files)} new files for {token}USDT")
