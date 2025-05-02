@@ -35,6 +35,13 @@ def download_data(token, training_days, region, data_provider):
     else:
         raise ValueError("Unsupported data provider")
 
+def calculate_rsi(data, periods=5):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 def format_data(files_btc, files_sol, data_provider):
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
     print(f"Raw files for SOLUSDT: {files_sol[:5]}")
@@ -126,10 +133,11 @@ def format_data(files_btc, files_sol, data_provider):
     for pair in ["SOLUSDT", "BTCUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 4):  # Reduced lags to 3
+            for lag in range(1, 4):  # 3 lags
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
-        price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).std()
-        price_df[f"ma5_{pair}"] = price_df[f"close_{pair}"].rolling(window=5).mean()
+        price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=2).std()  # 2-period volatility
+        price_df[f"ma3_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).mean()  # 3-period MA
+        price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=5)  # 5-period RSI
         price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"]
 
     price_df["hour_of_day"] = price_df.index.hour
@@ -164,7 +172,9 @@ def load_frame(file_path, timeframe):
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day", "target_SOLUSDT"])
@@ -181,13 +191,18 @@ def load_frame(file_path, timeframe):
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
     
     X = df[features]
     y = df["target_SOLUSDT"]
+    
+    print(f"Training data stats: y mean={y.mean():.6f}, y std={y.std():.6f}, rows={len(y)}")
+    print(f"NaN counts in X:\n{X.isna().sum()}")
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -236,8 +251,9 @@ def preprocess_live_data(df_btc, df_sol):
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 4):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
-        df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=3).std()
-        df[f"ma5_{pair}"] = df[f"close_{pair}"].rolling(window=5).mean()
+        df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=2).std()
+        df[f"ma3_{pair}"] = df[f"close_{pair}"].rolling(window=3).mean()
+        df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=5)
         df[f"volume_{pair}"] = df[f"volume_{pair}"]
 
     df["hour_of_day"] = df.index.hour
@@ -249,7 +265,7 @@ def preprocess_live_data(df_btc, df_sol):
 
     if len(df) == 0:
         print("Warning: No valid data after preprocessing. Returning default prediction.")
-        return np.array([[]])  # Return empty array to handle gracefully
+        return np.array([[]])
 
     features = [
         f"{metric}_{pair}_lag{lag}" 
@@ -259,7 +275,9 @@ def preprocess_live_data(df_btc, df_sol):
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma3_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -292,12 +310,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         model = xgb.XGBRegressor(
             objective="reg:squarederror",
             learning_rate=0.1,
-            max_depth=3,
-            n_estimators=100,
+            max_depth=5,
+            n_estimators=200,
             subsample=0.8,
             colsample_bytree=0.8,
-            alpha=20,
-            lambda_=20
+            alpha=10,
+            lambda_=10
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
@@ -309,12 +327,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         print("\n🚀 Training XGBoost Model with Grid Search...")
         param_grid = {
             'learning_rate': [0.01, 0.05, 0.1],
-            'max_depth': [3, 5, 7],
-            'n_estimators': [100, 200, 300],
+            'max_depth': [3, 5, 7, 9],  # Increased complexity
+            'n_estimators': [100, 200, 300, 400],  # More trees
             'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7, 0.9],
-            'alpha': [20, 30, 40],  # Increased regularization
-            'lambda': [20, 30, 40]  # Increased regularization
+            'alpha': [0, 10, 20],  # Lower regularization
+            'lambda': [1, 10, 20]  # Lower regularization
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
@@ -371,7 +389,7 @@ def get_inference(token, timeframe, region, data_provider):
             df_sol = download_binance_current_day_data("SOLUSDT", region)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching live data: {str(e)} - Response: {e.response.text if e.response else 'No response'}")
-            return 0.0  # Default prediction on error
+            return 0.0
     
     ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
     try:
@@ -380,18 +398,18 @@ def get_inference(token, timeframe, region, data_provider):
         latest_price = float(response.json()['price'])
     except Exception as e:
         print(f"Error fetching latest price: {str(e)}")
-        return 0.0  # Default prediction on error
+        return 0.0
     
     X_new = preprocess_live_data(df_btc, df_sol)
     if X_new.size == 0:
         print("No valid data for prediction. Returning default log-return.")
-        return 0.0  # Default prediction if no data
+        return 0.0
     
     try:
         log_return_pred = loaded_model.predict(X_new[-1].reshape(1, -1))[0]
     except Exception as e:
         print(f"Error in model prediction: {str(e)}")
-        return 0.0  # Default prediction on error
+        return 0.0
     
     predicted_price = latest_price * np.exp(log_return_pred)
     
