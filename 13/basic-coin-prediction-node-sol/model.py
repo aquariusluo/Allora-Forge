@@ -35,13 +35,6 @@ def download_data(token, training_days, region, data_provider):
     else:
         raise ValueError("Unsupported data provider")
 
-def calculate_rsi(data, periods=14):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
 def format_data(files_btc, files_sol, data_provider):
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
     print(f"Raw files for SOLUSDT: {files_sol[:5]}")
@@ -137,8 +130,6 @@ def format_data(files_btc, files_sol, data_provider):
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
         price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).std()
         price_df[f"ma5_{pair}"] = price_df[f"close_{pair}"].rolling(window=5).mean()
-        price_df[f"ma10_{pair}"] = price_df[f"close_{pair}"].rolling(window=10).mean()
-        price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
         price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"]
 
     price_df["hour_of_day"] = price_df.index.hour
@@ -175,10 +166,6 @@ def load_frame(file_path, timeframe):
         ] + [
             f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
@@ -195,10 +182,6 @@ def load_frame(file_path, timeframe):
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -255,16 +238,18 @@ def preprocess_live_data(df_btc, df_sol):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
         df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=3).std()
         df[f"ma5_{pair}"] = df[f"close_{pair}"].rolling(window=5).mean()
-        df[f"ma10_{pair}"] = df[f"close_{pair}"].rolling(window=10).mean()
-        df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"])
         df[f"volume_{pair}"] = df[f"volume_{pair}"]
 
     df["hour_of_day"] = df.index.hour
     
     print(f"Rows after adding features: {len(df)}")
     print(f"NaN counts before dropna:\n{df.isna().sum()}")
-    df = df.dropna(subset=["target_SOLUSDT"] + [f"{metric}_SOLUSDT_lag1" for metric in ["open", "high", "low", "close"]])
+    df = df.dropna(subset=[f"{metric}_SOLUSDT_lag1" for metric in ["open", "high", "low", "close"]])
     print(f"Live data after preprocessing rows: {len(df)}")
+
+    if len(df) == 0:
+        print("Warning: No valid data after preprocessing. Returning default prediction.")
+        return np.array([[]])  # Return empty array to handle gracefully
 
     features = [
         f"{metric}_{pair}_lag{lag}" 
@@ -276,20 +261,21 @@ def preprocess_live_data(df_btc, df_sol):
         ] + [
             f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
-            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
-        ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
     
     X = df[features]
     if len(X) == 0:
-        raise ValueError("No valid data after preprocessing live data.")
-    
+        print("Warning: No valid features after preprocessing. Returning default prediction.")
+        return np.array([[]])
+
     with open(scaler_file_path, "rb") as f:
         scaler = pickle.load(f)
-    X_scaled = scaler.transform(X)
+    try:
+        X_scaled = scaler.transform(X)
+    except Exception as e:
+        print(f"Error in scaler.transform: {str(e)}")
+        return np.array([[]])
     
     return X_scaled
 
@@ -310,13 +296,13 @@ def train_model(timeframe, file_path=training_price_data_path):
             n_estimators=100,
             subsample=0.8,
             colsample_bytree=0.8,
-            alpha=10,
-            lambda_=10
+            alpha=20,
+            lambda_=20
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
     else:
-        n_splits = min(10, max(2, n_samples - 1))  # Increased splits
+        n_splits = min(10, max(2, n_samples - 1))
         print(f"Using {n_splits} splits for cross-validation with {n_samples} samples")
         tscv = TimeSeriesSplit(n_splits=n_splits)
         
@@ -327,8 +313,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             'n_estimators': [100, 200, 300],
             'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7, 0.9],
-            'alpha': [10, 20, 30],  # Increased regularization
-            'lambda': [10, 20, 30]  # Increased regularization
+            'alpha': [20, 30, 40],  # Increased regularization
+            'lambda': [20, 30, 40]  # Increased regularization
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
@@ -385,15 +371,27 @@ def get_inference(token, timeframe, region, data_provider):
             df_sol = download_binance_current_day_data("SOLUSDT", region)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching live data: {str(e)} - Response: {e.response.text if e.response else 'No response'}")
-            raise
+            return 0.0  # Default prediction on error
     
     ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
-    response = requests.get(ticker_url)
-    response.raise_for_status()
-    latest_price = float(response.json()['price'])
+    try:
+        response = requests.get(ticker_url)
+        response.raise_for_status()
+        latest_price = float(response.json()['price'])
+    except Exception as e:
+        print(f"Error fetching latest price: {str(e)}")
+        return 0.0  # Default prediction on error
     
     X_new = preprocess_live_data(df_btc, df_sol)
-    log_return_pred = loaded_model.predict(X_new[-1].reshape(1, -1))[0]
+    if X_new.size == 0:
+        print("No valid data for prediction. Returning default log-return.")
+        return 0.0  # Default prediction if no data
+    
+    try:
+        log_return_pred = loaded_model.predict(X_new[-1].reshape(1, -1))[0]
+    except Exception as e:
+        print(f"Error in model prediction: {str(e)}")
+        return 0.0  # Default prediction on error
     
     predicted_price = latest_price * np.exp(log_return_pred)
     
