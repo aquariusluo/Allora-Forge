@@ -25,13 +25,13 @@ def update_data():
     
     print("Downloading BTC data...")
     files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
-    print("Downloading BERA data...")
-    files_bera = download_data("BERA", TRAINING_DAYS, REGION, DATA_PROVIDER)
-    if not files_btc or not files_bera:
+    print("Downloading SOL data...")
+    files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
+    if not files_btc or not files_sol:
         print("Warning: No data files downloaded for one or both pairs. Attempting to proceed with available data.")
-    print(f"Files downloaded - BTC: {len(files_btc)}, BERA: {len(files_bera)}")
+    print(f"Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}")
     print("Formatting data...")
-    format_data(files_btc, files_bera, DATA_PROVIDER)
+    format_data(files_btc, files_sol, DATA_PROVIDER)
     print("Training model...")
     train_model(TIMEFRAME)
     print("Data update and training completed.")
