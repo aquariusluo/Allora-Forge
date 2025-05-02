@@ -7,6 +7,13 @@ from config import TIMEFRAME
 def calculate_log_return(current_price, future_price):
     return np.log(future_price / current_price)
 
+def calculate_rsi(data, periods=5):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 def generate_features_sol(data):
     data_tf = data.resample(TIMEFRAME, on="timestamp").agg({
         "open": "first",
@@ -20,6 +27,9 @@ def generate_features_sol(data):
     for col in ["open", "high", "low", "close"]:
         for i in range(1, 11):
             features[f"{col}_SOLUSDT_lag{i}"] = data_tf[col].shift(i)
+    
+    # RSI (5-period)
+    features["rsi_SOLUSDT"] = calculate_rsi(data_tf["close"], periods=5)
     
     # Hour of day
     features["hour_of_day"] = data_tf.index.hour
