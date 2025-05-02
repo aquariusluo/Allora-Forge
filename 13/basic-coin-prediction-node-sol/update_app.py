@@ -27,6 +27,9 @@ def generate_features_sol(data):
     # Moving average (3-period)
     features["ma3_SOLUSDT"] = data_8h["close"].rolling(window=3).mean()
     
+    # MACD
+    features["macd_SOLUSDT"] = data_8h["close"].ewm(span=12, adjust=False).mean() - data_8h["close"].ewm(span=26, adjust=False).mean()
+    
     # Volume feature
     features["volume_SOLUSDT"] = data_8h["volume"]
     
