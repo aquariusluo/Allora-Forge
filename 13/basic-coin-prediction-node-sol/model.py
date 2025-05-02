@@ -35,7 +35,15 @@ def download_data(token, training_days, region, data_provider):
     else:
         raise ValueError("Unsupported data provider")
 
+def calculate_rsi(data, periods=5):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 def format_data(files_btc, files_sol, data_provider):
+    print(f"Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
     print(f"Raw files for SOLUSDT: {files_sol[:5]}")
     print(f"Files for BTCUSDT: {len(files_btc)}, Files for SOLUSDT: {len(files_sol)}")
@@ -128,6 +136,7 @@ def format_data(files_btc, files_sol, data_provider):
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 11):  # 10 lags
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
+        price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=5)
 
     price_df["hour_of_day"] = price_df.index.hour
     price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
@@ -158,7 +167,7 @@ def load_frame(file_path, timeframe):
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
             for lag in range(1, 11)
-        ] + ["hour_of_day", "target_SOLUSDT"])
+        ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
     
     df.ffill(inplace=True)
@@ -169,7 +178,7 @@ def load_frame(file_path, timeframe):
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
         for lag in range(1, 11)
-    ] + ["hour_of_day"]
+    ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day"]
     
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -224,6 +233,7 @@ def preprocess_live_data(df_btc, df_sol):
         for metric in ["open", "high", "low", "close"]:
             for lag in range(1, 11):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
+        df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=5)
 
     df["hour_of_day"] = df.index.hour
     
@@ -241,7 +251,7 @@ def preprocess_live_data(df_btc, df_sol):
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
         for lag in range(1, 11)
-    ] + ["hour_of_day"]
+    ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day"]
     
     X = df[features]
     if len(X) == 0:
@@ -275,8 +285,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             n_estimators=100,
             subsample=0.7,
             colsample_bytree=0.5,
-            alpha=20,  # Increased regularization
-            lambda_=20  # Increased regularization
+            alpha=20,
+            lambda_=20
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
@@ -292,8 +302,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             'n_estimators': [100, 200],
             'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7],
-            'alpha': [10, 20, 30],  # Increased regularization
-            'lambda': [10, 20, 30]  # Increased regularization
+            'alpha': [10, 20, 30],
+            'lambda': [10, 20, 30]
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
