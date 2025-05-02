@@ -2,43 +2,31 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta
+from config import TIMEFRAME
 
 def calculate_log_return(current_price, future_price):
     return np.log(future_price / current_price)
 
 def generate_features_sol(data):
-    data_8h = data.resample("8h", on="timestamp").agg({
+    data_tf = data.resample(TIMEFRAME, on="timestamp").agg({
         "open": "first",
         "high": "max",
         "low": "min",
-        "close": "last",
-        "volume": "sum"
+        "close": "last"
     })
-    features = pd.DataFrame(index=data_8h.index)
+    features = pd.DataFrame(index=data_tf.index)
     
-    # Lagged OHLC features (3 lags)
+    # Lagged OHLC features (10 lags)
     for col in ["open", "high", "low", "close"]:
-        for i in range(1, 4):
-            features[f"{col}_SOLUSDT_lag{i}"] = data_8h[col].shift(i)
-    
-    # Volatility (2-period standard deviation)
-    features["volatility_SOLUSDT"] = data_8h["close"].rolling(window=2).std()
-    
-    # Moving average (3-period)
-    features["ma3_SOLUSDT"] = data_8h["close"].rolling(window=3).mean()
-    
-    # MACD
-    features["macd_SOLUSDT"] = data_8h["close"].ewm(span=12, adjust=False).mean() - data_8h["close"].ewm(span=26, adjust=False).mean()
-    
-    # Volume feature
-    features["volume_SOLUSDT"] = data_8h["volume"]
+        for i in range(1, 11):
+            features[f"{col}_SOLUSDT_lag{i}"] = data_tf[col].shift(i)
     
     # Hour of day
-    features["hour_of_day"] = data_8h.index.hour
+    features["hour_of_day"] = data_tf.index.hour
     
     # Target: log-return
-    current = data_8h["close"]
-    future = data_8h["close"].shift(-1)
+    current = data_tf["close"]
+    future = data_tf["close"].shift(-1)
     features["target_SOLUSDT"] = calculate_log_return(current, future)
     
     # Forward-fill NaNs before dropping
