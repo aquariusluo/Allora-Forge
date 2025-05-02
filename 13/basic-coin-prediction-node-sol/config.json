@@ -29,11 +29,11 @@
     },
     "worker": [
       {
-        "topicId": 56,
+        "topicId": 57,
         "inferenceEntrypointName": "apiAdapter",
         "parameters": {
           "InferenceEndpoint": "http://inference:8000/inference/{Token}",
-          "Token": "BERA"
+          "Token": "SOL"
         }
       }
     ]
