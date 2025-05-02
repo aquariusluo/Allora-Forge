@@ -35,6 +35,13 @@ def download_data(token, training_days, region, data_provider):
     else:
         raise ValueError("Unsupported data provider")
 
+def calculate_rsi(data, periods=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
 def format_data(files_btc, files_sol, data_provider):
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
     print(f"Raw files for SOLUSDT: {files_sol[:5]}")
@@ -121,25 +128,24 @@ def format_data(files_btc, files_sol, data_provider):
         print(f"Rows after resampling to {TIMEFRAME}: {len(price_df)}")
 
     # Forward-fill NaNs before adding features
-    price_df.fillna(method="ffill", inplace=True)
+    price_df.ffill(inplace=True)
 
     for pair in ["SOLUSDT", "BTCUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 6):  # Reduced lags to preserve data
+            for lag in range(1, 4):  # Reduced lags to 3
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
-        # Volatility
         price_df[f"volatility_{pair}"] = price_df[f"close_{pair}"].rolling(window=3).std()
-        # Moving averages
-        price_df[f"ma7_{pair}"] = price_df[f"close_{pair}"].rolling(window=7).mean()
-        price_df[f"ma21_{pair}"] = price_df[f"close_{pair}"].rolling(window=21).mean()
-        # Volume
+        price_df[f"ma5_{pair}"] = price_df[f"close_{pair}"].rolling(window=5).mean()
+        price_df[f"ma10_{pair}"] = price_df[f"close_{pair}"].rolling(window=10).mean()
+        price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
         price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"]
 
     price_df["hour_of_day"] = price_df.index.hour
     price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
     print(f"Rows before dropna: {len(price_df)}")
-    price_df = price_df.dropna(subset=["target_SOLUSDT"])
+    print(f"NaN counts before dropna:\n{price_df.isna().sum()}")
+    price_df = price_df.dropna(subset=["target_SOLUSDT"] + [f"{metric}_SOLUSDT_lag1" for metric in ["open", "high", "low", "close"]])
     print(f"Rows after dropna: {len(price_df)}")
     
     if len(price_df) == 0:
@@ -163,13 +169,15 @@ def load_frame(file_path, timeframe):
             f"{metric}_{pair}_lag{lag}" 
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
-            for lag in range(1, 6)
+            for lag in range(1, 4)
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma7_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma21_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day", "target_SOLUSDT"])
@@ -182,13 +190,15 @@ def load_frame(file_path, timeframe):
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 6)
+        for lag in range(1, 4)
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma7_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma21_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -237,34 +247,38 @@ def preprocess_live_data(df_btc, df_sol):
         print(f"Rows after resampling to {TIMEFRAME}: {len(df)}")
 
     # Forward-fill NaNs before adding features
-    df.fillna(method="ffill", inplace=True)
+    df.ffill(inplace=True)
 
     for pair in ["SOLUSDT", "BTCUSDT"]:
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 6):
+            for lag in range(1, 4):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
         df[f"volatility_{pair}"] = df[f"close_{pair}"].rolling(window=3).std()
-        df[f"ma7_{pair}"] = df[f"close_{pair}"].rolling(window=7).mean()
-        df[f"ma21_{pair}"] = df[f"close_{pair}"].rolling(window=21).mean()
+        df[f"ma5_{pair}"] = df[f"close_{pair}"].rolling(window=5).mean()
+        df[f"ma10_{pair}"] = df[f"close_{pair}"].rolling(window=10).mean()
+        df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"])
         df[f"volume_{pair}"] = df[f"volume_{pair}"]
 
     df["hour_of_day"] = df.index.hour
     
     print(f"Rows after adding features: {len(df)}")
-    df = df.dropna()
+    print(f"NaN counts before dropna:\n{df.isna().sum()}")
+    df = df.dropna(subset=["target_SOLUSDT"] + [f"{metric}_SOLUSDT_lag1" for metric in ["open", "high", "low", "close"]])
     print(f"Live data after preprocessing rows: {len(df)}")
 
     features = [
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 6)
+        for lag in range(1, 4)
         ] + [
             f"volatility_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma7_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma5_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
-            f"ma21_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+            f"ma10_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
+        ] + [
+            f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + [
             f"volume_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]
         ] + ["hour_of_day"]
@@ -297,12 +311,12 @@ def train_model(timeframe, file_path=training_price_data_path):
             subsample=0.8,
             colsample_bytree=0.8,
             alpha=10,
-            lambda_=1
+            lambda_=10
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
     else:
-        n_splits = min(5, max(2, n_samples - 1))
+        n_splits = min(10, max(2, n_samples - 1))  # Increased splits
         print(f"Using {n_splits} splits for cross-validation with {n_samples} samples")
         tscv = TimeSeriesSplit(n_splits=n_splits)
         
@@ -313,8 +327,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             'n_estimators': [100, 200, 300],
             'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7, 0.9],
-            'alpha': [0, 10, 20],
-            'lambda': [1, 10, 20]
+            'alpha': [10, 20, 30],  # Increased regularization
+            'lambda': [10, 20, 30]  # Increased regularization
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
