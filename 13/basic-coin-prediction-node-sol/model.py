@@ -275,8 +275,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             n_estimators=100,
             subsample=0.7,
             colsample_bytree=0.5,
-            alpha=10,
-            lambda_=10
+            alpha=20,  # Increased regularization
+            lambda_=20  # Increased regularization
         )
         model.fit(X_train, y_train)
         print("Basic XGBoost model trained with default parameters.")
@@ -292,8 +292,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             'n_estimators': [100, 200],
             'subsample': [0.7, 0.8, 0.9],
             'colsample_bytree': [0.5, 0.7],
-            'alpha': [0, 10, 20],
-            'lambda': [1, 10, 20]
+            'alpha': [10, 20, 30],  # Increased regularization
+            'lambda': [10, 20, 30]  # Increased regularization
         }
         model = xgb.XGBRegressor(objective="reg:squarederror")
         grid_search = GridSearchCV(
