@@ -1,0 +1,40 @@
+{
+    "wallet": {
+      "chainId": "allora-testnet-1",
+      "keyringBackend": "test",
+      "keyringPassphrase": "",
+      "addressKeyName": "testkey",
+      "addressRestoreMnemonic": "charge detect length school habit artwork acid panther bench toy blanket muscle square praise concert price save essay discover between ice twice viable birth",
+      "alloraHomeDir": "",
+      "gasPrices": "auto",
+      "gasPriceUpdateInterval": 5,
+      "maxFees": 50000000,
+      "gasAdjustment": 1.2,
+      "simulateGasFromStart": true,
+      "GasPerByte": 1,
+      "BaseGas": 200000,
+      "nodeRpcs": ["https://allora-rpc.testnet.allora.network","https://allora-rpc.monallo.ai","https://rpc.ankr.com/allora_testnet"],
+      "nodegRpcs": ["allora-grpc.testnet.allora.network:443"],
+      "maxRetries": 5,
+      "retryDelay": 3,
+      "accountSequenceRetryDelay": 1,
+      "launchRoutineDelay": 5,
+      "submitTx": true,
+      "blockDurationEstimated": 6,
+      "windowCorrectionFactor": 0.8,
+      "timeoutRPCSecondsQuery": 60,
+      "timeoutRPCSecondsTx": 300,
+      "timeoutRPCSecondsRegistration": 300,
+      "timeoutHTTPConnection": 10
+    },
+    "worker": [
+      {
+        "topicId": 56,
+        "inferenceEntrypointName": "apiAdapter",
+        "parameters": {
+          "InferenceEndpoint": "http://inference:8000/inference/{Token}",
+          "Token": "BERA"
+        }
+      }
+    ]
+  }
