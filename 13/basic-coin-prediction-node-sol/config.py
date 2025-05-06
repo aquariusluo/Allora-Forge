@@ -1,11 +1,12 @@
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
 
-CONFIG_VERSION = "2025-05-06-v1"
-print(f"Loaded config.py version {CONFIG_VERSION} with TIMEFRAME={os.getenv('TIMEFRAME', '4h')}, TRAINING_DAYS={os.getenv('TRAINING_DAYS', '180')}")
+CONFIG_VERSION = "2025-05-06-v2"
+print(f"[{datetime.now()}] Loaded config.py version {CONFIG_VERSION} with TIMEFRAME={os.getenv('TIMEFRAME', '4h')}, TRAINING_DAYS={os.getenv('TRAINING_DAYS', '180')}")
 
 # Configuration variables
 data_base_path = os.getenv("DATA_BASE_PATH", "data")
