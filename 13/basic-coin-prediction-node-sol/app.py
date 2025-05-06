@@ -5,7 +5,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (enhanced version) with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (enhanced version, reverted to 2025-05-02) with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 # Download data and train model on startup
 try:
