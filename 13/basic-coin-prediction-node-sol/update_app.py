@@ -23,9 +23,9 @@ def generate_features_sol(data):
     })
     features = pd.DataFrame(index=data_tf.index)
     
-    # Lagged OHLC features (10 lags)
+    # Lagged OHLC features (5 lags)
     for col in ["open", "high", "low", "close"]:
-        for i in range(1, 11):
+        for i in range(1, 6):
             features[f"{col}_SOLUSDT_lag{i}"] = data_tf[col].shift(i)
     
     # RSI (5-period)
