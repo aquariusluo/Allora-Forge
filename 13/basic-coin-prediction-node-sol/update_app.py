@@ -54,7 +54,7 @@ def save_features():
     features = generate_features_sol(df)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     features.to_csv(output_path, index=False)
-    print(f"SOL features saved to {output_path}")
+    print(f"[{datetime.now()}] SOL features saved to {output_path}")
 
 if __name__ == "__main__":
     save_features()
