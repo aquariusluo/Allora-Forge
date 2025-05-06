@@ -17,7 +17,8 @@ coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 scaler_file_path = os.path.join(data_base_path, "scaler.pkl")
 
-print(f"Loaded model.py with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+MODEL_VERSION = "2025-05-06-v1"
+print(f"Loaded model.py version {MODEL_VERSION} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
     files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
@@ -45,7 +46,7 @@ def calculate_rsi(data, periods=5):
     return 100 - (100 / (1 + rs))
 
 def format_data(files_btc, files_sol, data_provider):
-    print(f"Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+    print(f"Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}, Model Version={MODEL_VERSION}")
     print(f"Raw files for BTCUSDT: {files_btc[:5]}")
     print(f"Raw files for SOLUSDT: {files_sol[:5]}")
     print(f"Files for BTCUSDT: {len(files_btc)}, Files for SOLUSDT: {len(files_sol)}")
@@ -79,7 +80,7 @@ def format_data(files_btc, files_sol, data_provider):
                     df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
                     df["date"] = pd.to_datetime(df["end_time"], unit="us", errors='coerce')
                     df = df.dropna(subset=["date"])
-                    if df["date"].max() > pd.Timestamp("2025-03-28") or df["date"].min() < pd.Timestamp("2020-01-01"):
+                    if df["date"].max() > pd.Timestamp("2025-05-06") or df["date"].min() < pd.Timestamp("2020-01-01"):
                         raise ValueError(f"Timestamps out of expected range in {file}: min {df['date'].min()}, max {df['date'].max()}")
                     df.set_index("date", inplace=True)
                     print(f"Processed BTC file {file} with {len(df)} rows, sample dates: {df.index[:5].tolist()}")
@@ -136,12 +137,12 @@ def format_data(files_btc, files_sol, data_provider):
     for pair in ["SOLUSDT", "BTCUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 11):  # 10 lags
+            for lag in range(1, 6):  # Reduced to 5 lags
                 price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
         price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=5)
 
     price_df["hour_of_day"] = price_df.index.hour
-    price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
+    price_df["target_SOLUSDT"] = price_df[f"log_return_SOLUSDT"]
     print(f"Rows before dropna: {len(price_df)}")
     print(f"NaN counts before dropna:\n{price_df.isna().sum()}")
     price_df = price_df.dropna(subset=["target_SOLUSDT"] + [f"{metric}_SOLUSDT_lag1" for metric in ["open", "high", "low", "close"]])
@@ -168,7 +169,7 @@ def load_frame(file_path, timeframe):
             f"{metric}_{pair}_lag{lag}" 
             for pair in ["SOLUSDT", "BTCUSDT"]
             for metric in ["open", "high", "low", "close"]
-            for lag in range(1, 11)
+            for lag in range(1, 6)
         ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day", "target_SOLUSDT"])
         df.loc[0] = 0
     
@@ -179,7 +180,7 @@ def load_frame(file_path, timeframe):
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 11)
+        for lag in range(1, 6)
     ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day"]
     
     X = df[features]
@@ -233,7 +234,7 @@ def preprocess_live_data(df_btc, df_sol):
 
     for pair in ["SOLUSDT", "BTCUSDT"]:
         for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 11):
+            for lag in range(1, 6):
                 df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
         df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=5)
 
@@ -252,7 +253,7 @@ def preprocess_live_data(df_btc, df_sol):
         f"{metric}_{pair}_lag{lag}" 
         for pair in ["SOLUSDT", "BTCUSDT"]
         for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 11)
+        for lag in range(1, 6)
     ] + [f"rsi_{pair}" for pair in ["SOLUSDT", "BTCUSDT"]] + ["hour_of_day"]
     
     X = df[features]
