@@ -1,10 +1,11 @@
 from flask import Flask
 from model import download_data, format_data, train_model, get_inference
 from config import TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER
+from datetime import datetime
 
 app = Flask(__name__)
 
-print(f"Loaded app.py (enhanced version) with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (enhanced version) with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 # Download data and train model on startup
 try:
@@ -12,9 +13,9 @@ try:
     files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
     format_data(files_btc, files_sol, DATA_PROVIDER)
     model, scaler = train_model(TIMEFRAME)
-    print("Data update and training completed.")
+    print(f"[{datetime.now()}] Data update and training completed.")
 except Exception as e:
-    print(f"Error during data update or training: {str(e)}")
+    print(f"[{datetime.now()}] Error during data update or training: {str(e)}")
 
 @app.route('/inference/<token>', methods=['GET'])
 def inference(token):
