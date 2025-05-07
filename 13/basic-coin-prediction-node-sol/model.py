@@ -9,6 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, make_scorer
 from sklearn.feature_selection import SelectKBest, mutual_info_regression
+from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr, binomtest
 import xgboost as xgb
 import lightgbm as lgb
@@ -20,7 +21,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v33"
+MODEL_VERSION = "2025-05-07-optimized-v34"
 TRAINING_DAYS = 360
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
@@ -105,6 +106,23 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
+
+def calculate_volume_change(data, window=1):
+    try:
+        return data.pct_change(window).fillna(0)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def fetch_sentiment_data():
+    try:
+        positive_keywords = ["bullish", "buy", "up", "solana moon"]
+        negative_keywords = ["bearish", "sell", "down", "crash"]
+        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        return {'sentiment_score': sentiment_score}
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
+        return {'sentiment_score': 0.0}
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
     try:
@@ -194,7 +212,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
         print(f"[{datetime.now()}] Raw columns: {list(price_df.columns)}")
 
-        # Convert relevant columns to numeric
+        # Convert initial columns to numeric
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
@@ -212,17 +230,21 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
-            for lag in [1, 2, 3, 6]:  # Longer-term lags
+            for lag in [1, 2, 3, 6]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
+            price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
+        price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
         price_df["hour_of_day"] = price_df.index.hour
         onchain_data = fetch_solana_onchain_data()
         price_df["sol_tx_volume"] = onchain_data['tx_volume']
+        sentiment_data = fetch_sentiment_data()
+        price_df["sentiment_score"] = sentiment_data['sentiment_score']
 
         price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
 
@@ -235,6 +257,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
         print(f"[{datetime.now()}] NaN counts: {price_df.isna().sum().to_dict()}")
+        print(f"[{datetime.now()}] Dtypes: {price_df.dtypes.to_dict()}")
 
         if len(price_df) == 0:
             print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
@@ -263,8 +286,8 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3"]
-        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_btc_vol_ratio"]
+            for feature in ["rsi", "volatility", "ma3", "volume_change"]
+        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -334,11 +357,13 @@ def train_model(timeframe, file_path=training_price_data_path):
 
         print(f"[{datetime.now()}] Training features: {features}")
 
-        # Baseline metrics (mean predictor)
-        baseline_pred = np.full_like(y_test, y_train.mean())
+        # Baseline: Linear Regression
+        baseline_model = LinearRegression()
+        baseline_model.fit(X_train, y_train)
+        baseline_pred = baseline_model.predict(X_test)
         baseline_rmse = weighted_rmse(y_test, baseline_pred, np.abs(y_test))
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
-        print(f"[{datetime.now()}] Baseline Weighted RMSE: {baseline_rmse:.6f}, Baseline Weighted MZTAE: {baseline_mztae:.6f}")
+        print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
 
         if MODEL == "XGBoost":
             n_splits = min(5, max(2, len(X_train) - 1))
@@ -366,12 +391,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         elif MODEL == "LightGBM":
             model = lgb.LGBMRegressor(
                 objective='regression',
-                learning_rate=0.005,
+                learning_rate=0.01,
                 max_depth=5,
-                n_estimators=300,
+                n_estimators=400,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                num_leaves=6,
+                num_leaves=8,
                 min_child_samples=100
             )
             model.fit(X_train, y_train, feature_name=features)
@@ -380,6 +405,11 @@ def train_model(timeframe, file_path=training_price_data_path):
 
         pred_train = model.predict(X_train)
         pred_test = model.predict(X_test)
+
+        # Check prediction variance
+        pred_test_std = np.std(pred_test)
+        if pred_test_std < 1e-10:
+            print(f"[{datetime.now()}] Warning: Constant predictions detected (std: {pred_test_std:.6e}), model may be underfitting")
 
         weights = np.abs(y_test)
         train_mae = mean_absolute_error(y_train, pred_train)
@@ -395,10 +425,6 @@ def train_model(timeframe, file_path=training_price_data_path):
         directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
         correlation, p_value = pearsonr(y_test, pred_test)
 
-        # Check for constant predictions
-        if np.std(pred_test) < 1e-10:
-            print(f"[{datetime.now()}] Warning: Constant predictions detected, model may be underfitting")
-
         n_successes = int(directional_accuracy * len(y_test))
         binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
         print(f"[{datetime.now()}] Binomial Test p-value for Directional Accuracy: {binom_p_value:.4f}")
@@ -411,7 +437,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
+        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")  # Adjusted for LightGBM
 
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
         with open(model_file_path, "wb") as f:
@@ -508,12 +534,16 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
                 df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+                df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
+            df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
             df["hour_of_day"] = df.index.hour
             onchain_data = fetch_solana_onchain_data()
             df["sol_tx_volume"] = onchain_data['tx_volume']
+            sentiment_data = fetch_sentiment_data()
+            df["sentiment_score"] = sentiment_data['sentiment_score']
 
             # Convert all generated features to numeric
             feature_columns = [col for col in df.columns if col != 'hour_of_day']
@@ -524,6 +554,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
             print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
             print(f"[{datetime.now()}] Inference NaN counts: {df.isna().sum().to_dict()}")
+            print(f"[{datetime.now()}] Inference dtypes: {df.dtypes.to_dict()}")
 
         missing_cols = [col for col in features if col not in df.columns]
         if missing_cols:
