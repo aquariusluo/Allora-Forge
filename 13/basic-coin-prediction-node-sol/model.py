@@ -20,9 +20,9 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v26"
+MODEL_VERSION = "2025-05-07-optimized-v27"
 TRAINING_DAYS = 90
-print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (ETHUSDT, enhanced features) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (ETHUSDT, enhanced features, Solana RPC) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
     files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
@@ -43,20 +43,44 @@ def download_data(token, training_days, region, data_provider):
         raise ValueError("Unsupported data provider")
 
 def fetch_solana_onchain_data():
-    """Fetch Solana on-chain data using Helius API."""
+    """Fetch Solana on-chain data using Solana JSON-RPC."""
     try:
-        api_key = os.getenv("HELIUS_API_KEY", "your_helius_api_key")
-        url = f"https://api.helius.xyz/v0/network-stats?api-key={api_key}"
-        response = requests.get(url, timeout=5)
+        url = "https://api.mainnet-beta.solana.com"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getRecentPerformanceSamples",
+            "params": [1]
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
         response.raise_for_status()
         data = response.json()
+        tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
         return {
-            'tx_volume': data.get('total_transactions', 0),
-            'active_addresses': data.get('active_addresses', 0)
+            'tx_volume': tx_volume,
+            'active_addresses': 0  # Placeholder; Solana RPC doesn't provide this directly
         }
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0, 'active_addresses': 0}
+
+def fetch_binance_order_book(pair, region):
+    """Fetch order book depth from Binance API."""
+    try:
+        url = f"https://api.binance.{region}/api/v3/depth?symbol={pair}&limit=10"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        bid_volume = sum(float(bid[1]) for bid in data["bids"])
+        ask_volume = sum(float(ask[1]) for ask in data["asks"])
+        return {
+            'bid_ask_ratio': bid_volume / (ask_volume + 1e-10),
+            'order_book_imbalance': (bid_volume - ask_volume) / (bid_volume + ask_volume + 1e-10)
+        }
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
+        return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
 
 def calculate_rsi(data, periods=3):
     delta = data.diff()
@@ -176,7 +200,9 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             for metric in ["open", "high", "low", "close", "volume"]
         })
 
+    price_df.interpolate(method='linear', inplace=True)
     price_df.ffill(inplace=True)
+    price_df.bfill(inplace=True)
 
     for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
@@ -189,6 +215,9 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         price_df[f"macd_{pair}"] = calculate_macd(price_df[f"close_{pair}"])
         price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"].shift(1)
         price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] = calculate_bollinger_bands(price_df[f"close_{pair}"])
+        order_book = fetch_binance_order_book(pair, REGION)
+        price_df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
+        price_df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
     price_df["hour_of_day"] = price_df.index.hour
 
@@ -204,13 +233,14 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         raise ValueError("Empty DataFrame after preprocessing")
     
     price_df.to_csv(training_price_data_path, date_format='%Y-%m-%d %H:%M:%S')
-    print(f"[{datetime.now()}] Data saved to {training_price_data_path}")
+    print(f"[{datetime.now()}] Data saved to {training_price_data_path}, rows: {len(price_df)}")
 
 def load_frame(file_path, timeframe):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
     
     df = pd.read_csv(file_path, index_col='date', parse_dates=True)
+    df.interpolate(method='linear', inplace=True)
     df.ffill(inplace=True)
     df.bfill(inplace=True)
 
@@ -222,7 +252,7 @@ def load_frame(file_path, timeframe):
     ] + [
         f"{feature}_{pair}"
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-        for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower"]
+        for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower", "bid_ask_ratio", "order_book_imbalance"]
     ] + ["hour_of_day", "sol_tx_volume", "sol_active_addresses"]
 
     X = df[features]
@@ -260,12 +290,12 @@ def train_model(timeframe, file_path=training_price_data_path):
     tscv = TimeSeriesSplit(n_splits=n_splits)
     param_grid = {
         'learning_rate': [0.005, 0.01, 0.03, 0.1],
-        'max_depth': [3, 5, 7, 9],
+        'max_depth': [3, 5, 7],
         'n_estimators': [100, 200, 300],
         'subsample': [0.6, 0.8, 1.0],
         'colsample_bytree': [0.6, 0.8, 1.0],
-        'alpha': [0, 5, 10],
-        'lambda': [1, 3, 5]
+        'alpha': [0, 5],
+        'lambda': [1, 3]
     }
     xgb_model = xgb.XGBRegressor(objective="reg:squarederror")
     grid_search = GridSearchCV(
@@ -281,19 +311,20 @@ def train_model(timeframe, file_path=training_price_data_path):
 
     lgb_model = lgb.LGBMRegressor(
         objective='regression',
-        learning_rate=0.005,
+        learning_rate=0.01,
         max_depth=5,
         n_estimators=200,
-        subsample=0.7,
-        colsample_bytree=0.7,
-        num_leaves=31
+        subsample=0.8,
+        colsample_bytree=0.8,
+        num_leaves=20,
+        min_data_in_leaf=50
     )
     lgb_model.fit(X_train, y_train, feature_name=features)
 
     xgb_pred_train = xgb_model.predict(X_train)
     lgb_pred_train = lgb_model.predict(X_train)
     meta_X_train = np.column_stack((xgb_pred_train, lgb_pred_train))
-    meta_model = lgb.LGBMRegressor(n_estimators=50, learning_rate=0.01)
+    meta_model = lgb.LGBMRegressor(n_estimators=50, learning_rate=0.01, min_data_in_leaf=20)
     meta_model.fit(meta_X_train, y_train)
 
     xgb_pred_test = xgb_model.predict(X_test)
@@ -391,6 +422,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
 
+        df.interpolate(method='linear', inplace=True)
         df.ffill(inplace=True)
         df.bfill(inplace=True)
 
@@ -411,6 +443,9 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"], fast=4, slow=8, signal=3)
             df[f"volume_{pair}"] = df[f"volume_{pair}"].shift(1)
             df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
+            order_book = fetch_binance_order_book(pair, region)
+            df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
+            df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
         df["hour_of_day"] = df.index.hour
 
@@ -418,7 +453,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df["sol_tx_volume"] = onchain_data['tx_volume']
         df["sol_active_addresses"] = onchain_data['active_addresses']
 
-        df = df.ffill().bfill().dropna()
+        df = df.interpolate(method='linear').ffill().bfill().dropna()
 
     missing_cols = [col for col in features if col not in df.columns]
     if missing_cols:
@@ -433,7 +468,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
     X_scaled = scaler.transform(X)
     X_scaled_df = pd.DataFrame(X_scaled, columns=features, index=X.index)
 
-    last_row = X_scaled_df.reindex(columns=features).iloc[-1:].copy()
+    last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
     xgb_pred = xgb_model.predict(last_row)
     lgb_pred = lgb_model.predict(last_row)
     meta_X = np.column_stack((xgb_pred, lgb_pred))
