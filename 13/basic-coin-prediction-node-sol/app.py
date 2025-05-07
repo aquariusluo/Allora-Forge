@@ -13,7 +13,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, Solana RPC) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 recent_predictions = []
 recent_actuals = []
@@ -36,18 +36,41 @@ def parse_interval(interval):
 
 def fetch_solana_onchain_data():
     try:
-        api_key = os.getenv("HELIUS_API_KEY", "your_helius_api_key")
-        url = f"https://api.helius.xyz/v0/network-stats?api-key={api_key}"
-        response = requests.get(url, timeout=5)
+        url = "https://api.mainnet-beta.solana.com"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getRecentPerformanceSamples",
+            "params": [1]
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
         response.raise_for_status()
         data = response.json()
+        tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
         return {
-            'tx_volume': data.get('total_transactions', 0),
-            'active_addresses': data.get('active_addresses', 0)
+            'tx_volume': tx_volume,
+            'active_addresses': 0
         }
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0, 'active_addresses': 0}
+
+def fetch_binance_order_book(pair, region):
+    try:
+        url = f"https://api.binance.{region}/api/v3/depth?symbol={pair}&limit=10"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        bid_volume = sum(float(bid[1]) for bid in data["bids"])
+        ask_volume = sum(float(ask[1]) for ask in data["asks"])
+        return {
+            'bid_ask_ratio': bid_volume / (ask_volume + 1e-10),
+            'order_book_imbalance': (bid_volume - ask_volume) / (bid_volume + ask_volume + 1e-10)
+        }
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
+        return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -108,6 +131,7 @@ def fetch_and_preprocess_data():
         df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
 
+        df.interpolate(method='linear', inplace=True)
         df.ffill(inplace=True)
         df.bfill(inplace=True)
 
@@ -128,13 +152,16 @@ def fetch_and_preprocess_data():
             df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"], fast=4, slow=8, signal=3)
             df[f"volume_{pair}"] = df[f"volume_{pair}"].shift(1)
             df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
+            order_book = fetch_binance_order_book(pair, REGION)
+            df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
+            df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
         df["sol_active_addresses"] = onchain_data['active_addresses']
 
-        df = df.ffill().bfill().dropna()
+        df = df.interpolate(method='linear').ffill().bfill().dropna()
         cached_preprocessed_data = df
         print(f"[{datetime.now()}] Preprocessed recent data: {len(df)} rows")
         return df
