@@ -13,7 +13,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, Solana RPC, sentiment) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 recent_predictions = []
 recent_actuals = []
@@ -48,18 +48,10 @@ def fetch_solana_onchain_data():
         response.raise_for_status()
         data = response.json()
         tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
-
-        explorer_url = "https://explorer.solana.com/stats/api/active_addresses"
-        explorer_response = requests.get(explorer_url, timeout=5)
-        active_addresses = explorer_response.json().get("active_addresses", 0) if explorer_response.status_code == 200 else 0
-
-        return {
-            'tx_volume': tx_volume,
-            'active_addresses': active_addresses
-        }
+        return {'tx_volume': tx_volume}
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
-        return {'tx_volume': 0, 'active_addresses': 0}
+        return {'tx_volume': 0}
 
 def fetch_binance_order_book(pair, region):
     try:
@@ -81,8 +73,7 @@ def fetch_sentiment_data():
     try:
         positive_keywords = ["bullish", "buy", "up", "solana moon"]
         negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.0
-        sentiment_score += 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
         return {'sentiment_score': sentiment_score}
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
@@ -104,9 +95,10 @@ def fetch_and_preprocess_data():
     global cached_raw_data, cached_data, cached_preprocessed_data
     print(f"[{datetime.now()}] Fetching recent data for inference...")
     
-    if cached_preprocessed_data is not None and (time.time() - last_data_update) < parse_interval(UPDATE_INTERVAL):
-        print(f"[{datetime.now()}] Using cached preprocessed data: {len(cached_preprocessed_data)} rows")
-        return cached_preprocessed_data
+    # Temporarily disable caching to ensure fresh data
+    # if cached_preprocessed_data is not None and (time.time() - last_data_update) < parse_interval(UPDATE_INTERVAL):
+    #     print(f"[{datetime.now()}] Using cached preprocessed data: {len(cached_preprocessed_data)} rows")
+    #     return cached_preprocessed_data
 
     try:
         if DATA_PROVIDER == "coingecko":
@@ -123,6 +115,7 @@ def fetch_and_preprocess_data():
         return cached_preprocessed_data if cached_preprocessed_data is not None else pd.DataFrame()
 
     df_btc, df_sol, df_eth = cached_raw_data
+    print(f"[{datetime.now()}] Raw BTC rows: {len(df_btc)}, SOL rows: {len(df_sol)}, ETH rows: {len(df_eth)}")
 
     try:
         df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
@@ -146,6 +139,7 @@ def fetch_and_preprocess_data():
         df_sol = df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
         df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
+        print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(df)}")
 
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
@@ -155,6 +149,7 @@ def fetch_and_preprocess_data():
                 for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
                 for metric in ["open", "high", "low", "close", "volume"]
             })
+        print(f"[{datetime.now()}] After resampling rows: {len(df)}")
 
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close"]:
@@ -173,14 +168,14 @@ def fetch_and_preprocess_data():
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
-        df["sol_active_addresses"] = onchain_data['active_addresses']
 
         sentiment_data = fetch_sentiment_data()
         df["sentiment_score"] = sentiment_data['sentiment_score']
 
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
+        print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
+
         cached_preprocessed_data = df
-        print(f"[{datetime.now()}] Preprocessed recent data: {len(df)} rows")
         return df
     except Exception as e:
         print(f"[{datetime.now()}] Error preprocessing data: {str(e)}")
