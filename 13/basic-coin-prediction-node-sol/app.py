@@ -38,35 +38,6 @@ def parse_interval(interval):
         print(f"[{datetime.now()}] Error parsing interval {interval}: {str(e)}")
         return 180  # Default to 3 minutes
 
-def fetch_solana_onchain_data():
-    try:
-        url = "https://api.mainnet-beta.solana.com"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getRecentPerformanceSamples",
-            "params": [1]
-        }
-        response = requests.post(url, headers=headers, json=payload, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
-        return {'tx_volume': tx_volume}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
-        return {'tx_volume': 0}
-
-def fetch_sentiment_data():
-    try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
-        return {'sentiment_score': 0.0}
-
 def calculate_rsi(data, periods=3):
     try:
         delta = data.diff()
@@ -92,12 +63,15 @@ def calculate_ma(data, window=2):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+def calculate_bollinger_width(data, window=5, num_std=2):
     try:
-        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
-        return corr.fillna(0)
+        rolling_mean = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return (upper_band - lower_band) / rolling_mean
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating Bollinger width: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def calculate_volume_change(data, window=1):
@@ -106,6 +80,28 @@ def calculate_volume_change(data, window=1):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
+
+def calculate_volume_weighted_price(data_price, data_volume, window=3):
+    try:
+        return (data_price * data_volume).rolling(window=window).sum() / data_volume.rolling(window=window).sum()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volume-weighted price: {str(e)}")
+        return pd.Series(0, index=data_price.index)
+
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+    try:
+        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+        return corr.fillna(0)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_volume_momentum(data_volume, window=3):
+    try:
+        return data_volume.rolling(window=window).mean() / data_volume.rolling(window=window*2).mean() - 1
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volume momentum: {str(e)}")
+        return pd.Series(0, index=data_volume.index)
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -169,8 +165,6 @@ def fetch_and_preprocess_data():
             for metric in ["open", "high", "low", "close", "volume"]:
                 df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
 
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
-
         if TIMEFRAME != "1m":
             df = df.resample(TIMEFRAME, closed='right', label='right').agg({
                 f"{metric}_{pair}": "last"
@@ -185,16 +179,15 @@ def fetch_and_preprocess_data():
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
             df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+            df[f"bb_width_{pair}"] = calculate_bollinger_width(df[f"close_{pair}"])
             df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
+            df[f"vw_price_{pair}"] = calculate_volume_weighted_price(df[f"close_{pair}"], df[f"volume_{pair}"])
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
         df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
         df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
+        df["volume_momentum"] = calculate_volume_momentum(df["volume_SOLUSDT"])
         df["hour_of_day"] = df.index.hour
-        onchain_data = fetch_solana_onchain_data()
-        df["sol_tx_volume"] = onchain_data['tx_volume']
-        sentiment_data = fetch_sentiment_data()
-        df["sentiment_score"] = sentiment_data['sentiment_score']
 
         # Convert all generated features to numeric
         feature_columns = [col for col in df.columns if col != 'hour_of_day']
