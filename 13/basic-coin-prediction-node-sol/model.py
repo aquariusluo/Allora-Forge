@@ -20,27 +20,39 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v31"
+MODEL_VERSION = "2025-05-07-optimized-v32"
 TRAINING_DAYS = 360
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
-    files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
-    print(f"[{datetime.now()}] Downloaded {len(files)} new files for {token}USDT")
-    return files
+    try:
+        files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
+        print(f"[{datetime.now()}] Downloaded {len(files)} new files for {token}USDT")
+        return files
+    except Exception as e:
+        print(f"[{datetime.now()}] Error downloading Binance data for {token}: {str(e)}")
+        return []
 
 def download_data_coingecko(token, training_days):
-    files = download_coingecko_data(token, training_days, coingecko_data_path, CG_API_KEY)
-    print(f"[{datetime.now()}] Downloaded {len(files)} new files")
-    return files
+    try:
+        files = download_coingecko_data(token, training_days, coingecko_data_path, CG_API_KEY)
+        print(f"[{datetime.now()}] Downloaded {len(files)} new files")
+        return files
+    except Exception as e:
+        print(f"[{datetime.now()}] Error downloading CoinGecko data for {token}: {str(e)}")
+        return []
 
 def download_data(token, training_days, region, data_provider):
-    if data_provider == "coingecko":
-        return download_data_coingecko(token, int(training_days))
-    elif data_provider == "binance":
-        return download_data_binance(token, training_days, region)
-    else:
-        raise ValueError("Unsupported data provider")
+    try:
+        if data_provider == "coingecko":
+            return download_data_coingecko(token, int(training_days))
+        elif data_provider == "binance":
+            return download_data_binance(token, training_days, region)
+        else:
+            raise ValueError("Unsupported data provider")
+    except Exception as e:
+        print(f"[{datetime.now()}] Error downloading data for {token}: {str(e)}")
+        return []
 
 def fetch_solana_onchain_data():
     try:
@@ -77,474 +89,489 @@ def fetch_binance_order_book(pair, region):
         print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
         return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
 
-def fetch_sentiment_data():
-    try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
-        return {'sentiment_score': 0.0}
-
 def calculate_rsi(data, periods=3):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    try:
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_bollinger_bands(data, window=5, num_std=2):
-    rolling_mean = data.rolling(window=window).mean()
-    rolling_std = data.rolling(window=window).std()
-    upper_band = rolling_mean + (rolling_std * num_std)
-    lower_band = rolling_mean - (rolling_std * num_std)
-    return upper_band, lower_band
+    try:
+        rolling_mean = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return upper_band, lower_band
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
+        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
 
 def calculate_volatility(data, window=2):
-    return data.pct_change().rolling(window=window).std()
+    try:
+        return data.pct_change().rolling(window=window).std()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volatility: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_ma(data, window=2):
-    return data.rolling(window=window).mean()
+    try:
+        return data.rolling(window=window).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_macd(data, fast=4, slow=8, signal=3):
-    exp1 = data.ewm(span=fast, adjust=False).mean()
-    exp2 = data.ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd - signal_line
-
-def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
-    return data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+    try:
+        exp1 = data.ewm(span=fast, adjust=False).mean()
+        exp2 = data.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
-    print(f"[{datetime.now()}] Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}, Model Version={MODEL_VERSION}")
-    if not files_btc or not files_sol or not files_eth:
-        print(f"[{datetime.now()}] Warning: No files provided for BTCUSDT, SOLUSDT, or ETHUSDT, attempting to proceed with available data.")
+    try:
+        print(f"[{datetime.now()}] Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}, Model Version={MODEL_VERSION}")
+        if not files_btc or not files_sol or not files_eth:
+            print(f"[{datetime.now()}] Warning: No files provided for BTCUSDT, SOLUSDT, or ETHUSDT, attempting to proceed with available data.")
 
-    if data_provider == "binance":
-        files_btc = sorted([f for f in files_btc if "BTCUSDT" in os.path.basename(f) and f.endswith(".zip")])
-        files_sol = sorted([f for f in files_sol if "SOLUSDT" in os.path.basename(f) and f.endswith(".zip")])
-        files_eth = sorted([f for f in files_eth if "ETHUSDT" in os.path.basename(f) and f.endswith(".zip")])
+        if data_provider == "binance":
+            files_btc = sorted([f for f in files_btc if "BTCUSDT" in os.path.basename(f) and f.endswith(".zip")])
+            files_sol = sorted([f for f in files_sol if "SOLUSDT" in os.path.basename(f) and f.endswith(".zip")])
+            files_eth = sorted([f for f in files_eth if "ETHUSDT" in os.path.basename(f) and f.endswith(".zip")])
 
-    price_df_btc = pd.DataFrame()
-    price_df_sol = pd.DataFrame()
-    price_df_eth = pd.DataFrame()
-    skipped_files = []
+        price_df_btc = pd.DataFrame()
+        price_df_sol = pd.DataFrame()
+        price_df_eth = pd.DataFrame()
+        skipped_files = []
 
-    if data_provider == "binance":
-        for file in files_btc:
-            zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
-            if not os.path.exists(zip_file_path):
-                print(f"[{datetime.now()}] File not found: {zip_file_path}")
-                skipped_files.append(file)
-                continue
-            try:
-                myzip = ZipFile(zip_file_path)
-                with myzip.open(myzip.filelist[0]) as f:
-                    df = pd.read_csv(f, header=None)
-                    df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
-                    df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
-                    df = df.dropna(subset=["date"])
-                    df.set_index("date", inplace=True)
-                    price_df_btc = pd.concat([price_df_btc, df])
-            except Exception as e:
-                print(f"[{datetime.now()}] Error processing BTC file {file}: {str(e)}")
-                skipped_files.append(file)
-                continue
+        if data_provider == "binance":
+            for file in files_btc:
+                zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
+                if not os.path.exists(zip_file_path):
+                    print(f"[{datetime.now()}] File not found: {zip_file_path}")
+                    skipped_files.append(file)
+                    continue
+                try:
+                    myzip = ZipFile(zip_file_path)
+                    with myzip.open(myzip.filelist[0]) as f:
+                        df = pd.read_csv(f, header=None)
+                        df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
+                        df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
+                        df = df.dropna(subset=["date"])
+                        df.set_index("date", inplace=True)
+                        price_df_btc = pd.concat([price_df_btc, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing BTC file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
 
-        for file in files_sol:
-            zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
-            if not os.path.exists(zip_file_path):
-                print(f"[{datetime.now()}] File not found: {zip_file_path}")
-                skipped_files.append(file)
-                continue
-            try:
-                myzip = ZipFile(zip_file_path)
-                with myzip.open(myzip.filelist[0]) as f:
-                    df = pd.read_csv(f, header=None)
-                    df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
-                    df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
-                    df = df.dropna(subset=["date"])
-                    df.set_index("date", inplace=True)
-                    price_df_sol = pd.concat([price_df_sol, df])
-            except Exception as e:
-                print(f"[{datetime.now()}] Error processing SOL file {file}: {str(e)}")
-                skipped_files.append(file)
-                continue
+            for file in files_sol:
+                zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
+                if not os.path.exists(zip_file_path):
+                    print(f"[{datetime.now()}] File not found: {zip_file_path}")
+                    skipped_files.append(file)
+                    continue
+                try:
+                    myzip = ZipFile(zip_file_path)
+                    with myzip.open(myzip.filelist[0]) as f:
+                        df = pd.read_csv(f, header=None)
+                        df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
+                        df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
+                        df = df.dropna(subset=["date"])
+                        df.set_index("date", inplace=True)
+                        price_df_sol = pd.concat([price_df_sol, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing SOL file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
 
-        for file in files_eth:
-            zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
-            if not os.path.exists(zip_file_path):
-                print(f"[{datetime.now()}] File not found: {zip_file_path}")
-                skipped_files.append(file)
-                continue
-            try:
-                myzip = ZipFile(zip_file_path)
-                with myzip.open(myzip.filelist[0]) as f:
-                    df = pd.read_csv(f, header=None)
-                    df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
-                    df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
-                    df = df.dropna(subset=["date"])
-                    df.set_index("date", inplace=True)
-                    price_df_eth = pd.concat([price_df_eth, df])
-            except Exception as e:
-                print(f"[{datetime.now()}] Error processing ETH file {file}: {str(e)}")
-                skipped_files.append(file)
-                continue
+            for file in files_eth:
+                zip_file_path = os.path.join(binance_data_path, os.path.basename(file))
+                if not os.path.exists(zip_file_path):
+                    print(f"[{datetime.now()}] File not found: {zip_file_path}")
+                    skipped_files.append(file)
+                    continue
+                try:
+                    myzip = ZipFile(zip_file_path)
+                    with myzip.open(myzip.filelist[0]) as f:
+                        df = pd.read_csv(f, header=None)
+                        df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
+                        df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
+                        df = df.dropna(subset=["date"])
+                        df.set_index("date", inplace=True)
+                        price_df_eth = pd.concat([price_df_eth, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing ETH file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
 
-    if price_df_btc.empty or price_df_sol.empty or price_df_eth.empty:
-        print(f"[{datetime.now()}] Warning: Partial data processed, proceeding with available data.")
+        if price_df_btc.empty or price_df_sol.empty or price_df_eth.empty:
+            print(f"[{datetime.now()}] Error: Empty data for one or more pairs (BTC: {len(price_df_btc)}, SOL: {len(price_df_sol)}, ETH: {len(price_df_eth)})")
+            return pd.DataFrame()
 
-    price_df_btc = price_df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
-    price_df_sol = price_df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
-    price_df_eth = price_df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
-    price_df = pd.concat([price_df_btc, price_df_sol, price_df_eth], axis=1)
-    print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
-
-    # Convert relevant columns to numeric
-    for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-        for metric in ["open", "high", "low", "close", "volume"]:
-            price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
-
-    if TIMEFRAME != "1m":
-        price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
-            f"{metric}_{pair}": "last"
-            for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for metric in ["open", "high", "low", "close", "volume"]
-        })
-    print(f"[{datetime.now()}] After resampling rows: {len(price_df)}")
-
-    price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
-
-    for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-        price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
-        for metric in ["open", "high", "low", "close"]:
-            for lag in range(1, 4):
-                price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
-        price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
-        price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
-        price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
-        price_df[f"macd_{pair}"] = calculate_macd(price_df[f"close_{pair}"])
-        price_df[f"volume_{pair}"] = price_df[f"volume_{pair}"].shift(1)
-        price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] = calculate_bollinger_bands(price_df[f"close_{pair}"])
-        order_book = fetch_binance_order_book(pair, REGION)
-        price_df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
-        price_df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
-
-    price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
-    print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(price_df)}")
-
-    price_df["hour_of_day"] = price_df.index.hour
-
-    onchain_data = fetch_solana_onchain_data()
-    price_df["sol_tx_volume"] = onchain_data['tx_volume']
-
-    sentiment_data = fetch_sentiment_data()
-    price_df["sentiment_score"] = sentiment_data['sentiment_score']
-
-    price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
-    price_df = price_df.dropna(subset=["target_SOLUSDT"])
-    print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
-    print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
-
-    if len(price_df) == 0:
-        print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
-        raise ValueError("Empty DataFrame after preprocessing")
-    
-    price_df.to_csv(training_price_data_path, date_format='%Y-%m-%d %H:%M:%S')
-    print(f"[{datetime.now()}] Data saved to {training_price_data_path}, rows: {len(price_df)}")
-
-def load_frame(file_path, timeframe):
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
-    
-    df = pd.read_csv(file_path, index_col='date', parse_dates=True)
-    df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
-
-    features = [
-        f"{metric}_{pair}_lag{lag}"
-        for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-        for metric in ["open", "high", "low", "close"]
-        for lag in range(1, 4)
-    ] + [
-        f"{feature}_{pair}"
-        for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-        for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower", "bid_ask_ratio", "order_book_imbalance"]
-    ] + ["hour_of_day", "sol_tx_volume", "sentiment_score", "sol_btc_corr"]
-
-    X = df[features]
-    y = df["target_SOLUSDT"]
-
-    if len(X) == 0:
-        raise ValueError("No samples available for scaling in load_frame")
-
-    selector = SelectKBest(score_func=mutual_info_regression, k=min(50, len(features)))
-    X_selected = selector.fit_transform(X, y)
-    selected_features = [features[i] for i in selector.get_support(indices=True)]
-    X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_selected_df)
-    X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
-
-    split_idx = int(len(X) * 0.8)
-    if split_idx == 0:
-        raise ValueError("Not enough data to split into training and test sets")
-    X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
-    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-
-    return X_train, X_test, y_train, y_test, scaler, selected_features
-
-def weighted_rmse(y_true, y_pred, weights):
-    return np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
-
-def weighted_mztae(y_true, y_pred, weights):
-    ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
-    return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
-
-def custom_directional_loss(y_true, y_pred):
-    mse = mean_squared_error(y_true, y_pred)
-    directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-    return mse + 1.0 * directional_error
-
-def train_model(timeframe, file_path=training_price_data_path):
-    X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
-    print(f"[{datetime.now()}] Training features: {features}")
-
-    # Regression model
-    if MODEL == "XGBoost":
-        n_splits = min(5, max(2, len(X_train) - 1))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        param_grid = {
-            'learning_rate': [0.005, 0.01, 0.03],
-            'max_depth': [3, 5, 7],
-            'n_estimators': [100, 200, 300],
-            'subsample': [0.7, 0.9, 1.0],
-            'colsample_bytree': [0.7, 0.9, 1.0],
-            'alpha': [0, 5],
-            'lambda': [1, 3]
-        }
-        model = xgb.XGBRegressor(objective="reg:squarederror")
-        grid_search = GridSearchCV(
-            estimator=model,
-            param_grid=param_grid,
-            cv=tscv,
-            scoring=make_scorer(custom_directional_loss, greater_is_better=False),
-            n_jobs=-1,
-            verbose=2
-        )
-        grid_search.fit(X_train, y_train)
-        model_reg = grid_search.best_estimator_
-    elif MODEL == "LightGBM":
-        model_reg = lgb.LGBMRegressor(
-            objective='regression',
-            learning_rate=0.01,
-            max_depth=5,
-            n_estimators=200,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            num_leaves=8,
-            min_child_samples=200
-        )
-        model_reg.fit(X_train, y_train, feature_name=features)
-    else:
-        raise ValueError(f"Unsupported model: {MODEL}")
-
-    # Classification model for directional accuracy
-    y_train_sign = np.sign(y_train)
-    model_clf = lgb.LGBMClassifier(
-        objective='binary',
-        learning_rate=0.01,
-        max_depth=5,
-        n_estimators=100,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        num_leaves=8,
-        min_child_samples=200
-    )
-    model_clf.fit(X_train, y_train_sign, feature_name=features)
-
-    pred_train = model_reg.predict(X_train)
-    pred_test = model_reg.predict(X_test)
-    pred_train_sign = model_clf.predict(X_train)
-    pred_test_sign = model_clf.predict(X_test)
-
-    # Combine regression and classification predictions
-    pred_test_adjusted = pred_test * pred_test_sign
-
-    weights = np.abs(y_test)
-    train_mae = mean_absolute_error(y_train, pred_train)
-    test_mae = mean_absolute_error(y_test, pred_test_adjusted)
-    train_rmse = np.sqrt(mean_squared_error(y_train, pred_train))
-    test_rmse = np.sqrt(mean_squared_error(y_test, pred_test_adjusted))
-    train_r2 = r2_score(y_train, pred_train)
-    test_r2 = r2_score(y_test, pred_test_adjusted)
-    train_weighted_rmse = weighted_rmse(y_train, pred_train, np.abs(y_train))
-    test_weighted_rmse = weighted_rmse(y_test, pred_test_adjusted, weights)
-    train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
-    test_mztae = weighted_mztae(y_test, pred_test_adjusted, weights)
-    directional_accuracy = np.mean(np.sign(pred_test_adjusted) == np.sign(y_test))
-    correlation, p_value = pearsonr(y_test, pred_test_adjusted)
-
-    n_successes = int(directional_accuracy * len(y_test))
-    binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
-    print(f"[{datetime.now()}] Binomial Test p-value for Directional Accuracy: {binom_p_value:.4f}")
-
-    print(f"[{datetime.now()}] Training MAE: {train_mae:.6f}, Test MAE: {test_mae:.6f}")
-    print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
-    print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
-    print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
-    print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
-    print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-    print(f"[{datetime.now()}] Feature importances: {list(zip(features, model_reg.feature_importances_))}")
-
-    os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
-    with open(model_file_path, "wb") as f:
-        pickle.dump({'reg': model_reg, 'clf': model_clf}, f)
-    with open(scaler_file_path, "wb") as f:
-        pickle.dump(scaler, f)
-
-    metrics = {
-        'train_mae': train_mae,
-        'test_mae': test_mae,
-        'train_rmse': train_rmse,
-        'test_rmse': test_rmse,
-        'train_r2': train_r2,
-        'test_r2': test_r2,
-        'train_weighted_rmse': train_weighted_rmse,
-        'test_weighted_rmse': test_weighted_rmse,
-        'train_mztae': train_mztae,
-        'test_mztae': test_mztae,
-        'directional_accuracy': directional_accuracy,
-        'correlation': correlation,
-        'correlation_p_value': p_value,
-        'binom_p_value': binom_p_value
-    }
-
-    return {'reg': model_reg, 'clf': model_clf}, scaler, metrics, features
-
-def get_inference(token, timeframe, region, data_provider, features, cached_data=None):
-    with open(model_file_path, "rb") as f:
-        models = pickle.load(f)
-    model_reg = models['reg']
-    model_clf = models['clf']
-
-    df = cached_data
-    if df is None:
-        if data_provider == "coingecko":
-            df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
-            df_sol = download_coingecko_current_day_data("SOL", CG_API_KEY)
-            df_eth = download_coingecko_current_day_data("ETH", CG_API_KEY)
-        else:
-            df_btc = download_binance_current_day_data("BTCUSDT", region)
-            df_sol = download_binance_current_day_data("SOLUSDT", region)
-            df_eth = download_binance_current_day_data("ETHUSDT", region)
-
-        df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
-        df_sol['date'] = pd.to_datetime(df_sol['date'], utc=True)
-        df_eth['date'] = pd.to_datetime(df_eth['date'], utc=True)
-        df_btc = df_btc.sort_values('date').drop_duplicates(subset="date", keep="last")
-        df_sol = df_sol.sort_values('date').drop_duplicates(subset="date", keep="last")
-        df_eth = df_eth.sort_values('date').drop_duplicates(subset="date", keep="last")
-
-        all_dates = pd.Series(list(set(df_btc['date']).union(df_sol['date'], df_eth['date']))).sort_values()
-        all_dates = pd.Index(all_dates, name='date')
-
-        df_btc = df_btc.set_index('date').reindex(all_dates, method='ffill').reset_index()
-        df_sol = df_sol.set_index('date').reindex(all_dates, method='ffill').reset_index()
-        df_eth = df_eth.set_index('date').reindex(all_dates, method='ffill').reset_index()
-
-        df_btc = df_btc.set_index("date")
-        df_sol = df_sol.set_index("date")
-        df_eth = df_eth.set_index("date")
-        df_btc = df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
-        df_sol = df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
-        df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
-        df = pd.concat([df_btc, df_sol, df_eth], axis=1)
-        print(f"[{datetime.now()}] Raw inference DataFrame rows: {len(df)}")
+        price_df_btc = price_df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
+        price_df_sol = price_df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
+        price_df_eth = price_df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
+        price_df = pd.concat([price_df_btc, price_df_sol, price_df_eth], axis=1)
+        print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
+        print(f"[{datetime.now()}] Raw columns: {list(price_df.columns)}")
 
         # Convert relevant columns to numeric
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
-                df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
-
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+                price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
 
         if TIMEFRAME != "1m":
-            df = df.resample(TIMEFRAME, closed='right', label='right').agg({
+            price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
                 f"{metric}_{pair}": "last"
                 for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
                 for metric in ["open", "high", "low", "close", "volume"]
             })
-        print(f"[{datetime.now()}] After resampling inference rows: {len(df)}")
+        print(f"[{datetime.now()}] After resampling rows: {len(price_df)}")
 
+        price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+
+        # Simplified feature set
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-            for metric in ["open", "high", "low", "close"]:
-                for lag in range(1, 4):
-                    df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
-            df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
-            df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=2)
-            df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
-            df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"], fast=4, slow=8, signal=3)
-            df[f"volume_{pair}"] = df[f"volume_{pair}"].shift(1)
-            df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
-            order_book = fetch_binance_order_book(pair, region)
-            df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
-            df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
+            price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
+            for metric in ["close"]:
+                for lag in range(1, 3):
+                    price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
+            price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
+            price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
 
-        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
-        print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(df)}")
-
-        df["hour_of_day"] = df.index.hour
-
+        price_df["hour_of_day"] = price_df.index.hour
         onchain_data = fetch_solana_onchain_data()
-        df["sol_tx_volume"] = onchain_data['tx_volume']
+        price_df["sol_tx_volume"] = onchain_data['tx_volume']
 
-        sentiment_data = fetch_sentiment_data()
-        df["sentiment_score"] = sentiment_data['sentiment_score']
+        price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
+        price_df = price_df.dropna(subset=["target_SOLUSDT"])
+        print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
+        print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
 
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
-        print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
-        print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
+        if len(price_df) == 0:
+            print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
+            return pd.DataFrame()
 
-    missing_cols = [col for col in features if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing feature columns: {missing_cols}")
-    X = df[features]
-    if len(X) == 0:
-        print(f"[{datetime.now()}] No valid data for prediction.")
-        return 0.0
+        price_df.to_csv(training_price_data_path, date_format='%Y-%m-%d %H:%M:%S')
+        print(f"[{datetime.now()}] Data saved to {training_price_data_path}, rows: {len(price_df)}")
+        return price_df
 
-    with open(scaler_file_path, "rb") as f:
-        scaler = pickle.load(f)
-    X_scaled = scaler.transform(X)
-    X_scaled_df = pd.DataFrame(X_scaled, columns=features, index=X.index)
-
-    last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
-    pred_reg = model_reg.predict(last_row)
-    pred_clf = model_clf.predict(last_row)
-
-    ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
-    try:
-        response = requests.get(ticker_url)
-        response.raise_for_status()
-        latest_price = float(response.json()['price'])
     except Exception as e:
-        print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
-        return 0.0
+        print(f"[{datetime.now()}] Error in format_data: {str(e)}")
+        return pd.DataFrame()
 
-    log_return_pred = pred_reg[0] * pred_clf[0]
-    predicted_price = latest_price * np.exp(log_return_pred)
-    print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Log Return: {log_return_pred:.6f}")
-    print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
-    print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
-    return log_return_pred
+def load_frame(file_path, timeframe):
+    try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
+        
+        df = pd.read_csv(file_path, index_col='date', parse_dates=True)
+        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+
+        features = [
+            f"{metric}_{pair}_lag{lag}"
+            for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
+            for metric in ["close"]
+            for lag in range(1, 3)
+        ] + [
+            f"{feature}_{pair}"
+            for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
+            for feature in ["rsi", "ma3"]
+        ] + ["hour_of_day", "sol_tx_volume"]
+
+        missing_features = [f for f in features if f not in df.columns]
+        if missing_features:
+            print(f"[{datetime.now()}] Missing features in load_frame: {missing_features}")
+            return None, None, None, None, None, None
+
+        X = df[features]
+        y = df["target_SOLUSDT"]
+
+        if len(X) == 0:
+            print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
+            return None, None, None, None, None, None
+
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
+        X_selected = selector.fit_transform(X, y)
+        selected_features = [features[i] for i in selector.get_support(indices=True)]
+        X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_selected_df)
+        X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
+
+        split_idx = int(len(X) * 0.8)
+        if split_idx == 0:
+            print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets")
+            return None, None, None, None, None, None
+        X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+        print(f"[{datetime.now()}] Loaded frame: {len(X_train)} training samples, {len(X_test)} test samples, features: {selected_features}")
+        return X_train, X_test, y_train, y_test, scaler, selected_features
+
+    except Exception as e:
+        print(f"[{datetime.now()}] Error in load_frame: {str(e)}")
+        return None, None, None, None, None, None
+
+def weighted_rmse(y_true, y_pred, weights):
+    try:
+        return np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating weighted RMSE: {str(e)}")
+        return float('inf')
+
+def weighted_mztae(y_true, y_pred, weights):
+    try:
+        ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
+        return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
+        return float('inf')
+
+def custom_directional_loss(y_true, y_pred):
+    try:
+        mse = mean_squared_error(y_true, y_pred)
+        directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
+        return mse + 1.0 * directional_error
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating custom directional loss: {str(e)}")
+        return float('inf')
+
+def train_model(timeframe, file_path=training_price_data_path):
+    try:
+        X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
+        if X_train is None:
+            print(f"[{datetime.now()}] Error: Failed to load frame, cannot train model")
+            return None, None, {}, []
+
+        print(f"[{datetime.now()}] Training features: {features}")
+
+        if MODEL == "XGBoost":
+            n_splits = min(5, max(2, len(X_train) - 1))
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+            param_grid = {
+                'learning_rate': [0.005, 0.01, 0.03],
+                'max_depth': [3, 5, 7],
+                'n_estimators': [100, 200, 300],
+                'subsample': [0.7, 0.9, 1.0],
+                'colsample_bytree': [0.7, 0.9, 1.0],
+                'alpha': [0, 5],
+                'lambda': [1, 3]
+            }
+            model = xgb.XGBRegressor(objective="reg:squarederror")
+            grid_search = GridSearchCV(
+                estimator=model,
+                param_grid=param_grid,
+                cv=tscv,
+                scoring=make_scorer(custom_directional_loss, greater_is_better=False),
+                n_jobs=-1,
+                verbose=2
+            )
+            grid_search.fit(X_train, y_train)
+            model = grid_search.best_estimator_
+        elif MODEL == "LightGBM":
+            model = lgb.LGBMRegressor(
+                objective='regression',
+                learning_rate=0.01,
+                max_depth=5,
+                n_estimators=200,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                num_leaves=6,
+                min_child_samples=100
+            )
+            model.fit(X_train, y_train, feature_name=features)
+        else:
+            raise ValueError(f"Unsupported model: {MODEL}")
+
+        pred_train = model.predict(X_train)
+        pred_test = model.predict(X_test)
+
+        weights = np.abs(y_test)
+        train_mae = mean_absolute_error(y_train, pred_train)
+        test_mae = mean_absolute_error(y_test, pred_test)
+        train_rmse = np.sqrt(mean_squared_error(y_train, pred_train))
+        test_rmse = np.sqrt(mean_squared_error(y_test, pred_test))
+        train_r2 = r2_score(y_train, pred_train)
+        test_r2 = r2_score(y_test, pred_test)
+        train_weighted_rmse = weighted_rmse(y_train, pred_train, np.abs(y_train))
+        test_weighted_rmse = weighted_rmse(y_test, pred_test, weights)
+        train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
+        test_mztae = weighted_mztae(y_test, pred_test, weights)
+        directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
+        correlation, p_value = pearsonr(y_test, pred_test)
+
+        n_successes = int(directional_accuracy * len(y_test))
+        binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
+        print(f"[{datetime.now()}] Binomial Test p-value for Directional Accuracy: {binom_p_value:.4f}")
+
+        print(f"[{datetime.now()}] Training MAE: {train_mae:.6f}, Test MAE: {test_mae:.6f}")
+        print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
+        print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
+        print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
+        print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
+        print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
+        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
+
+        os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
+        with open(model_file_path, "wb") as f:
+            pickle.dump(model, f)
+        with open(scaler_file_path, "wb") as f:
+            pickle.dump(scaler, f)
+        print(f"[{datetime.now()}] Model saved to {model_file_path}, scaler saved to {scaler_file_path}")
+
+        metrics = {
+            'train_mae': train_mae,
+            'test_mae': test_mae,
+            'train_rmse': train_rmse,
+            'test_rmse': test_rmse,
+            'train_r2': train_r2,
+            'test_r2': test_r2,
+            'train_weighted_rmse': train_weighted_rmse,
+            'test_weighted_rmse': test_weighted_rmse,
+            'train_mztae': train_mztae,
+            'test_mztae': test_mztae,
+            'directional_accuracy': directional_accuracy,
+            'correlation': correlation,
+            'correlation_p_value': p_value,
+            'binom_p_value': binom_p_value
+        }
+
+        return model, scaler, metrics, features
+
+    except Exception as e:
+        print(f"[{datetime.now()}] Error in train_model: {str(e)}")
+        return None, None, {}, []
+
+def get_inference(token, timeframe, region, data_provider, features, cached_data=None):
+    try:
+        if not os.path.exists(model_file_path):
+            print(f"[{datetime.now()}] Error: Model file {model_file_path} not found")
+            return 0.0
+        with open(model_file_path, "rb") as f:
+            model = pickle.load(f)
+
+        df = cached_data
+        if df is None:
+            if data_provider == "coingecko":
+                df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
+                df_sol = download_coingecko_current_day_data("SOL", CG_API_KEY)
+                df_eth = download_coingecko_current_day_data("ETH", CG_API_KEY)
+            else:
+                df_btc = download_binance_current_day_data("BTCUSDT", region)
+                df_sol = download_binance_current_day_data("SOLUSDT", region)
+                df_eth = download_binance_current_day_data("ETHUSDT", region)
+
+            df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
+            df_sol['date'] = pd.to_datetime(df_sol['date'], utc=True)
+            df_eth['date'] = pd.to_datetime(df_eth['date'], utc=True)
+            df_btc = df_btc.sort_values('date').drop_duplicates(subset="date", keep="last")
+            df_sol = df_sol.sort_values('date').drop_duplicates(subset="date", keep="last")
+            df_eth = df_eth.sort_values('date').drop_duplicates(subset="date", keep="last")
+
+            all_dates = pd.Series(list(set(df_btc['date']).union(df_sol['date'], df_eth['date']))).sort_values()
+            all_dates = pd.Index(all_dates, name='date')
+
+            df_btc = df_btc.set_index('date').reindex(all_dates, method='ffill').reset_index()
+            df_sol = df_sol.set_index('date').reindex(all_dates, method='ffill').reset_index()
+            df_eth = df_eth.set_index('date').reindex(all_dates, method='ffill').reset_index()
+
+            df_btc = df_btc.set_index("date")
+            df_sol = df_sol.set_index("date")
+            df_eth = df_eth.set_index("date")
+            df_btc = df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
+            df_sol = df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
+            df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
+            df = pd.concat([df_btc, df_sol, df_eth], axis=1)
+            print(f"[{datetime.now()}] Raw inference DataFrame rows: {len(df)}")
+
+            # Convert relevant columns to numeric
+            for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+                for metric in ["open", "high", "low", "close", "volume"]:
+                    df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
+
+            df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+
+            if TIMEFRAME != "1m":
+                df = df.resample(TIMEFRAME, closed='right', label='right').agg({
+                    f"{metric}_{pair}": "last"
+                    for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
+                    for metric in ["open", "high", "low", "close", "volume"]
+                })
+            print(f"[{datetime.now()}] After resampling inference rows: {len(df)}")
+
+            for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+                for metric in ["close"]:
+                    for lag in range(1, 3):
+                        df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
+                df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
+                df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+
+            df["hour_of_day"] = df.index.hour
+            onchain_data = fetch_solana_onchain_data()
+            df["sol_tx_volume"] = onchain_data['tx_volume']
+
+            df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
+            print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
+            print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
+
+        missing_cols = [col for col in features if col not in df.columns]
+        if missing_cols:
+            print(f"[{datetime.now()}] Missing feature columns: {missing_cols}")
+            return 0.0
+        X = df[features]
+        if len(X) == 0:
+            print(f"[{datetime.now()}] No valid data for prediction.")
+            return 0.0
+
+        with open(scaler_file_path, "rb") as f:
+            scaler = pickle.load(f)
+        X_scaled = scaler.transform(X)
+        X_scaled_df = pd.DataFrame(X_scaled, columns=features, index=X.index)
+
+        last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
+        pred = model.predict(last_row)
+
+        ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
+        try:
+            response = requests.get(ticker_url)
+            response.raise_for_status()
+            latest_price = float(response.json()['price'])
+        except Exception as e:
+            print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
+            return 0.0
+
+        log_return_pred = pred[0]
+        predicted_price = latest_price * np.exp(log_return_pred)
+        print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Log Return: {log_return_pred:.6f}")
+        print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
+        print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
+        return log_return_pred
+
+    except Exception as e:
+        print(f"[{datetime.now()}] Error in get_inference: {str(e)}")
+        return 0.0
 
 if __name__ == "__main__":
     files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
     files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
     files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
-    format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
-    model, scaler, metrics, features = train_model(TIMEFRAME)
-    log_return = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER, features)
+    df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+    if not df.empty:
+        model, scaler, metrics, features = train_model(TIMEFRAME)
+        if model is not None:
+            log_return = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER, features)
+        else:
+            print(f"[{datetime.now()}] Error: Training failed, cannot perform inference")
+    else:
+        print(f"[{datetime.now()}] Error: Data formatting failed, cannot train or infer")
