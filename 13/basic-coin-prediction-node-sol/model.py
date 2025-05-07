@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v32"
+MODEL_VERSION = "2025-05-07-optimized-v33"
 TRAINING_DAYS = 360
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
@@ -73,22 +73,6 @@ def fetch_solana_onchain_data():
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0}
 
-def fetch_binance_order_book(pair, region):
-    try:
-        url = f"https://api.binance.{region}/api/v3/depth?symbol={pair}&limit=10"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        bid_volume = sum(float(bid[1]) for bid in data["bids"])
-        ask_volume = sum(float(ask[1]) for ask in data["asks"])
-        return {
-            'bid_ask_ratio': bid_volume / (ask_volume + 1e-10),
-            'order_book_imbalance': (bid_volume - ask_volume) / (bid_volume + ask_volume + 1e-10)
-        }
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
-        return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
-
 def calculate_rsi(data, periods=3):
     try:
         delta = data.diff()
@@ -99,17 +83,6 @@ def calculate_rsi(data, periods=3):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
         return pd.Series(0, index=data.index)
-
-def calculate_bollinger_bands(data, window=5, num_std=2):
-    try:
-        rolling_mean = data.rolling(window=window).mean()
-        rolling_std = data.rolling(window=window).std()
-        upper_band = rolling_mean + (rolling_std * num_std)
-        lower_band = rolling_mean - (rolling_std * num_std)
-        return upper_band, lower_band
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
-        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
 
 def calculate_volatility(data, window=2):
     try:
@@ -125,15 +98,12 @@ def calculate_ma(data, window=2):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_macd(data, fast=4, slow=8, signal=3):
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
-        exp1 = data.ewm(span=fast, adjust=False).mean()
-        exp2 = data.ewm(span=slow, adjust=False).mean()
-        macd = exp1 - exp2
-        signal_line = macd.ewm(span=signal, adjust=False).mean()
-        return macd - signal_line
+        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+        return corr.fillna(0)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
@@ -239,23 +209,32 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
 
         price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
-        # Simplified feature set
+        # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
-            for metric in ["close"]:
-                for lag in range(1, 3):
-                    price_df[f"{metric}_{pair}_lag{lag}"] = price_df[f"{metric}_{pair}"].shift(lag)
+            for lag in [1, 2, 3, 6]:  # Longer-term lags
+                price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
+            price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
 
+        price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
+        price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
         price_df["hour_of_day"] = price_df.index.hour
         onchain_data = fetch_solana_onchain_data()
         price_df["sol_tx_volume"] = onchain_data['tx_volume']
 
         price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
+
+        # Convert all generated features to numeric
+        feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT', 'hour_of_day']]
+        for col in feature_columns:
+            price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
+
         price_df = price_df.dropna(subset=["target_SOLUSDT"])
         print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
+        print(f"[{datetime.now()}] NaN counts: {price_df.isna().sum().to_dict()}")
 
         if len(price_df) == 0:
             print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
@@ -278,15 +257,14 @@ def load_frame(file_path, timeframe):
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         features = [
-            f"{metric}_{pair}_lag{lag}"
+            f"close_{pair}_lag{lag}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for metric in ["close"]
-            for lag in range(1, 3)
+            for lag in [1, 2, 3, 6]
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "ma3"]
-        ] + ["hour_of_day", "sol_tx_volume"]
+            for feature in ["rsi", "volatility", "ma3"]
+        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_btc_vol_ratio"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -356,6 +334,12 @@ def train_model(timeframe, file_path=training_price_data_path):
 
         print(f"[{datetime.now()}] Training features: {features}")
 
+        # Baseline metrics (mean predictor)
+        baseline_pred = np.full_like(y_test, y_train.mean())
+        baseline_rmse = weighted_rmse(y_test, baseline_pred, np.abs(y_test))
+        baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
+        print(f"[{datetime.now()}] Baseline Weighted RMSE: {baseline_rmse:.6f}, Baseline Weighted MZTAE: {baseline_mztae:.6f}")
+
         if MODEL == "XGBoost":
             n_splits = min(5, max(2, len(X_train) - 1))
             tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -382,9 +366,9 @@ def train_model(timeframe, file_path=training_price_data_path):
         elif MODEL == "LightGBM":
             model = lgb.LGBMRegressor(
                 objective='regression',
-                learning_rate=0.01,
+                learning_rate=0.005,
                 max_depth=5,
-                n_estimators=200,
+                n_estimators=300,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 num_leaves=6,
@@ -411,6 +395,10 @@ def train_model(timeframe, file_path=training_price_data_path):
         directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
         correlation, p_value = pearsonr(y_test, pred_test)
 
+        # Check for constant predictions
+        if np.std(pred_test) < 1e-10:
+            print(f"[{datetime.now()}] Warning: Constant predictions detected, model may be underfitting")
+
         n_successes = int(directional_accuracy * len(y_test))
         binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
         print(f"[{datetime.now()}] Binomial Test p-value for Directional Accuracy: {binom_p_value:.4f}")
@@ -419,6 +407,8 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
+        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse:.2f}%")
+        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
         print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
@@ -444,7 +434,9 @@ def train_model(timeframe, file_path=training_price_data_path):
             'directional_accuracy': directional_accuracy,
             'correlation': correlation,
             'correlation_p_value': p_value,
-            'binom_p_value': binom_p_value
+            'binom_p_value': binom_p_value,
+            'baseline_rmse': baseline_rmse,
+            'baseline_mztae': baseline_mztae
         }
 
         return model, scaler, metrics, features
@@ -511,19 +503,27 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] After resampling inference rows: {len(df)}")
 
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-                for metric in ["close"]:
-                    for lag in range(1, 3):
-                        df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
+                for lag in [1, 2, 3, 6]:
+                    df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
+                df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
                 df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
 
+            df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+            df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
             df["hour_of_day"] = df.index.hour
             onchain_data = fetch_solana_onchain_data()
             df["sol_tx_volume"] = onchain_data['tx_volume']
 
+            # Convert all generated features to numeric
+            feature_columns = [col for col in df.columns if col != 'hour_of_day']
+            for col in feature_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
             df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
             print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
             print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
+            print(f"[{datetime.now()}] Inference NaN counts: {df.isna().sum().to_dict()}")
 
         missing_cols = [col for col in features if col not in df.columns]
         if missing_cols:
