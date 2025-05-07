@@ -20,9 +20,9 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v29"
-TRAINING_DAYS = 90
-print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+MODEL_VERSION = "2025-05-07-optimized-v30"
+TRAINING_DAYS = 180
+print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
     files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
@@ -117,6 +117,10 @@ def calculate_macd(data, fast=4, slow=8, signal=3):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     return macd - signal_line
 
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+    """Calculate rolling correlation between two assets."""
+    return data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+
 def format_data(files_btc, files_sol, files_eth, data_provider):
     print(f"[{datetime.now()}] Using TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}, Model Version={MODEL_VERSION}")
     if not files_btc or not files_sol or not files_eth:
@@ -202,6 +206,11 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
     price_df = pd.concat([price_df_btc, price_df_sol, price_df_eth], axis=1)
     print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
 
+    # Convert relevant columns to numeric
+    for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+        for metric in ["open", "high", "low", "close", "volume"]:
+            price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
+
     if TIMEFRAME != "1m":
         price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
             f"{metric}_{pair}": "last"
@@ -226,6 +235,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         order_book = fetch_binance_order_book(pair, REGION)
         price_df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
         price_df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
+
+    price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
+    price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
+    print(f"[{datetime.now()}] After adding cross-asset correlations rows: {len(price_df)}")
 
     price_df["hour_of_day"] = price_df.index.hour
 
@@ -262,7 +275,7 @@ def load_frame(file_path, timeframe):
         f"{feature}_{pair}"
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
         for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower", "bid_ask_ratio", "order_book_imbalance"]
-    ] + ["hour_of_day", "sol_tx_volume", "sentiment_score"]
+    ] + ["hour_of_day", "sol_tx_volume", "sentiment_score", "sol_btc_corr", "sol_eth_corr"]
 
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -296,7 +309,7 @@ def custom_directional_loss(y_true, y_pred):
     """Custom loss function to prioritize directional accuracy."""
     mse = mean_squared_error(y_true, y_pred)
     directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-    return mse + 0.7 * directional_error
+    return mse + 1.0 * directional_error
 
 def train_model(timeframe, file_path=training_price_data_path):
     X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
@@ -332,8 +345,8 @@ def train_model(timeframe, file_path=training_price_data_path):
             n_estimators=200,
             subsample=0.8,
             colsample_bytree=0.8,
-            num_leaves=15,
-            min_child_samples=50
+            num_leaves=10,
+            min_child_samples=100
         )
         model.fit(X_train, y_train, feature_name=features)
     else:
@@ -430,6 +443,11 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
         print(f"[{datetime.now()}] Raw inference DataFrame rows: {len(df)}")
 
+        # Convert relevant columns to numeric
+        for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+            for metric in ["open", "high", "low", "close", "volume"]:
+                df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
+
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         if TIMEFRAME != "1m":
@@ -453,6 +471,9 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             order_book = fetch_binance_order_book(pair, region)
             df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
             df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
+
+        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
 
         df["hour_of_day"] = df.index.hour
 
