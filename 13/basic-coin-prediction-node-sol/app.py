@@ -216,56 +216,64 @@ def fetch_and_preprocess_data():
         cached_preprocessed_data = None
         return pd.DataFrame()
 
-def update_data():
+def update_data(retries=3, backoff=2):
     global model_metrics, cached_features
-    print(f"[{datetime.now()}] Starting data update process...")
-    data_dir = os.path.join(os.getcwd(), "data", "binance")
-    price_data_file = os.path.join(os.getcwd(), "data", "price_data.csv")
-    model_file = model_file_path
-    scaler_file = scaler_file_path
+    for attempt in range(retries):
+        try:
+            print(f"[{datetime.now()}] Starting data update process (attempt {attempt+1}/{retries})...")
+            data_dir = os.path.join(os.getcwd(), "data", "binance")
+            price_data_file = os.path.join(os.getcwd(), "data", "price_data.csv")
+            model_file = model_file_path
+            scaler_file = scaler_file_path
 
-    # Clear existing model and scaler files to force retraining
-    for path in [model_file, scaler_file]:
-        if os.path.exists(path):
-            os.remove(path)
-            print(f"[{datetime.now()}] Cleared {path}")
+            # Clear existing model and scaler files to force retraining
+            for path in [model_file, scaler_file]:
+                if os.path.exists(path):
+                    os.remove(path)
+                    print(f"[{datetime.now()}] Cleared {path}")
 
-    # Only clear price data, not model files
-    for path in [data_dir, price_data_file]:
-        if os.path.exists(path):
-            if os.path.isdir(path):
-                for f in os.listdir(path):
-                    os.remove(os.path.join(path, f))
-            else:
-                os.remove(path)
-            print(f"[{datetime.now()}] Cleared {path}")
-    
-    try:
-        print(f"[{datetime.now()}] Downloading BTC data...")
-        files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
-        print(f"[{datetime.now()}] Downloading SOL data...")
-        files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
-        print(f"[{datetime.now()}] Downloading ETH data...")
-        files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
-        if not files_btc or not files_sol or not files_eth:
-            print(f"[{datetime.now()}] Warning: No data files downloaded for one or more pairs.")
+            # Only clear price data, not model files
+            for path in [data_dir, price_data_file]:
+                if os.path.exists(path):
+                    if os.path.isdir(path):
+                        for f in os.listdir(path):
+                            os.remove(os.path.join(path, f))
+                    else:
+                        os.remove(path)
+                    print(f"[{datetime.now()}] Cleared {path}")
+            
+            print(f"[{datetime.now()}] Downloading BTC data...")
+            files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            print(f"[{datetime.now()}] Downloading SOL data...")
+            files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            print(f"[{datetime.now()}] Downloading ETH data...")
+            files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            if not files_btc or not files_sol or not files_eth:
+                print(f"[{datetime.now()}] Warning: No data files downloaded for one or more pairs.")
+                raise ValueError("Data download failed")
+            print(f"[{datetime.now()}] Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}, ETH: {len(files_eth)}")
+
+            print(f"[{datetime.now()}] Formatting data...")
+            df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+            if df.empty:
+                print(f"[{datetime.now()}] Error: Data formatting returned empty DataFrame")
+                raise ValueError("Data formatting failed")
+            
+            print(f"[{datetime.now()}] Training model...")
+            model, scaler, metrics, features = train_model(TIMEFRAME)
+            if model is None:
+                print(f"[{datetime.now()}] Error: Training failed, model is None")
+                raise ValueError("Model training failed")
+            
+            model_metrics.update(metrics)
+            cached_features = features
+            print(f"[{datetime.now()}] Data update and training completed.")
             return
-        print(f"[{datetime.now()}] Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}, ETH: {len(files_eth)}")
-        print(f"[{datetime.now()}] Formatting data...")
-        df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
-        if df.empty:
-            print(f"[{datetime.now()}] Error: Data formatting returned empty DataFrame")
-            return
-        print(f"[{datetime.now()}] Training model...")
-        model, scaler, metrics, features = train_model(TIMEFRAME)
-        if model is None:
-            print(f"[{datetime.now()}] Error: Training failed, model is None")
-            return
-        model_metrics.update(metrics)
-        cached_features = features
-        print(f"[{datetime.now()}] Data update and training completed.")
-    except Exception as e:
-        print(f"[{datetime.now()}] Update failed: {str(e)}")
+        except Exception as e:
+            print(f"[{datetime.now()}] Update failed (attempt {attempt+1}/{retries}): {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    print(f"[{datetime.now()}] All update attempts failed.")
 
 @app.route("/inference/<string:token>")
 def generate_inference(token):
@@ -274,11 +282,13 @@ def generate_inference(token):
         if not token or token.upper() != TOKEN:
             error_msg = "Token is required" if not token else f"Token {token} not supported, expected {TOKEN}"
             return Response(error_msg, status=400, mimetype='text/plain')
+        
         if not os.path.exists(model_file_path):
             print(f"[{datetime.now()}] Model file {model_file_path} not found, attempting to update data...")
             update_data()
             if not os.path.exists(model_file_path):
-                return Response("Model file not found after update", status=500, mimetype='text/plain')
+                return Response("Model file not found after update attempts", status=500, mimetype='text/plain')
+        
         if cached_features is None or cached_data is None or (time.time() - last_data_update) > parse_interval(UPDATE_INTERVAL):
             cached_data = fetch_and_preprocess_data()
             if cached_data.empty:
@@ -289,6 +299,8 @@ def generate_inference(token):
             print(f"[{datetime.now()}] Warning: Inference returned 0.0, possible model or data issue")
             update_data()  # Retry training if inference fails
             inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
+            if inference == 0.0:
+                return Response("Inference failed after retry", status=500, mimetype='text/plain')
         
         recent_predictions.append(inference)
         if len(recent_predictions) > 100:
@@ -348,7 +360,7 @@ def generate_inference(token):
         return Response("Request timed out", status=504, mimetype='text/plain')
     except Exception as e:
         print(f"[{datetime.now()}] Inference error: {str(e)}")
-        return Response(str(e), status=500, mimetype='text/plain')
+        return Response(f"Inference failed: {str(e)}", status=500, mimetype='text/plain')
 
 @app.route("/update")
 def update():
