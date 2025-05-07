@@ -415,6 +415,11 @@ def train_model(timeframe, file_path=training_price_data_path):
         # Combine regression and classification predictions
         pred_test_adjusted = pred_test * pred_test_sign
 
+        # Check prediction variance
+        pred_test_std = np.std(pred_test_adjusted)
+        if pred_test_std < 1e-10:
+            print(f"[{datetime.now()}] Warning: Constant predictions detected (std: {pred_test_std:.6e}), model may be underfitting")
+
         weights = np.abs(y_test)
         train_mae = mean_absolute_error(y_train, pred_train)
         test_mae = mean_absolute_error(y_test, pred_test_adjusted)
@@ -554,9 +559,9 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
             df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
             print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
-            print(f"[{datetime.now()}] App inference features generated: {list(df.columns)}")
-            print(f"[{datetime.now()}] App inference NaN counts: {df.isna().sum().to_dict()}")
-            print(f"[{datetime.now()}] App inference dtypes: {df.dtypes.to_dict()}")
+            print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
+            print(f"[{datetime.now()}] Inference NaN counts: {df.isna().sum().to_dict()}")
+            print(f"[{datetime.now()}] Inference dtypes: {df.dtypes.to_dict()}")
 
         missing_cols = [col for col in features if col not in df.columns]
         if missing_cols:
@@ -596,88 +601,16 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         print(f"[{datetime.now()}] Error in get_inference: {str(e)}")
         return 0.0
 
-@app.route("/inference/<string:token>")
-def generate_inference(token):
-    global cached_data, cached_features, model_metrics, last_data_update
-    try:
-        if not token or token.upper() != TOKEN:
-            error_msg = "Token is required" if not token else f"Token {token} not supported, expected {TOKEN}"
-            return Response(error_msg, status=400, mimetype='text/plain')
-        if not os.path.exists(model_file_path):
-            print(f"[{datetime.now()}] Model file {model_file_path} not found, attempting to update data...")
-            update_data()
-            if not os.path.exists(model_file_path):
-                return Response("Model file not found after update", status=500, mimetype='text/plain')
-        if cached_features is None or cached_data is None or (time.time() - last_data_update) > parse_interval(UPDATE_INTERVAL):
-            cached_data = fetch_and_preprocess_data()
-            if cached_data.empty:
-                return Response("Failed to preprocess data", status=500, mimetype='text/plain')
-        
-        inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
-        
-        recent_predictions.append(inference)
-        if len(recent_predictions) > 100:
-            recent_predictions.pop(0)
-        
-        metrics_log = (
-            f"[{datetime.now()}] Model Metrics:\n"
-            f"Training MAE: {model_metrics.get('train_mae', 0):.6f}\n"
-            f"Training RMSE: {model_metrics.get('train_rmse', 0):.6f}\n"
-            f"Training R²: {model_metrics.get('train_r2', 0):.6f}\n"
-            f"Test MAE (log returns): {model_metrics.get('test_mae', 0):.6f}\n"
-            f"Test RMSE (log returns): {model_metrics.get('test_rmse', 0):.6f}\n"
-            f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n"
-            f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
-            f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
-            f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
-            f"Weighted RMSE Improvement: {100 * (model_metrics.get('baseline_rmse', 1) - model_metrics.get('test_weighted_rmse', float('inf'))) / model_metrics.get('baseline_rmse', 1):.2f}%\n"
-            f"Weighted MZTAE Improvement: {100 * (model_metrics.get('baseline_mztae', 1) - model_metrics.get('test_mztae', float('inf'))) / model_metrics.get('baseline_mztae', 1):.2f}%"
-        )
-        print(metrics_log)
-        
-        def check_actual_price():
-            try:
-                time.sleep(8 * 3600)
-                ticker_url = f'https://api.binance.{REGION}/api/v3/ticker/price?symbol=SOLUSDT'
-                response = requests.get(ticker_url, timeout=2)
-                response.raise_for_status()
-                new_price = float(response.json()['price'])
-                ticker_url_current = f'https://api.binance.{REGION}/api/v3/ticker/price?symbol=SOLUSDT'
-                response_current = requests.get(ticker_url_current, timeout=2)
-                response_current.raise_for_status()
-                current_price = float(response_current.json()['price'])
-                actual_log_return = np.log(new_price / current_price)
-                recent_actuals.append(actual_log_return)
-                if len(recent_actuals) > 100:
-                    recent_actuals.pop(0)
-                
-                if len(recent_actuals) >= 10:
-                    directional_accuracy = np.mean(np.sign(recent_predictions[-len(recent_actuals):]) == np.sign(recent_actuals))
-                    correlation, p_value = pearsonr(recent_predictions[-len(recent_actuals):], recent_actuals)
-                    print(f"[{datetime.now()}] Runtime Directional Accuracy: {directional_accuracy:.4f}, Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-            except Exception as e:
-                print(f"[{datetime.now()}] Error fetching actual price: {str(e)}")
-        
-        Thread(target=check_actual_price).start()
-        
-        return Response(f"{inference:.16f}", status=200, mimetype='text/plain')
-    except requests.exceptions.Timeout:
-        print(f"[{datetime.now()}] Inference timed out")
-        return Response("Request timed out", status=504, mimetype='text/plain')
-    except Exception as e:
-        print(f"[{datetime.now()}] Inference error: {str(e)}")
-        return Response(str(e), status=500, mimetype='text/plain')
-
-@app.route("/update")
-def update():
-    try:
-        Thread(target=update_data).start()
-        return "0"
-    except Exception as e:
-        print(f"[{datetime.now()}] Update failed: {str(e)}")
-        return "1"
-
 if __name__ == "__main__":
-    Thread(target=update_data_periodically).start()
-    print(f"[{datetime.now()}] Starting Flask server...")
-    app.run(host="0.0.0.0", port=8000)
+    files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
+    files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
+    files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
+    df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+    if not df.empty:
+        model, scaler, metrics, features = train_model(TIMEFRAME)
+        if model is not None:
+            log_return = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER, features)
+        else:
+            print(f"[{datetime.now()}] Error: Training failed, cannot perform inference")
+    else:
+        print(f"[{datetime.now()}] Error: Data formatting failed, cannot train or infer")
