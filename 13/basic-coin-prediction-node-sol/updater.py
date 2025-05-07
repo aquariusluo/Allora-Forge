@@ -92,7 +92,7 @@ def fetch_batch(pair, region, end_time, limit):
 
 def download_binance_current_day_data(pair, region):
     limit = 1000
-    total_minutes = 2880
+    total_minutes = 10080  # 7 days
     requests_needed = (total_minutes + limit - 1) // limit
     dfs = []
     end_time = int(time.time() * 1000)
