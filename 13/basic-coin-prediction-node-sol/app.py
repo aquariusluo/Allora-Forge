@@ -13,7 +13,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 recent_predictions = []
 recent_actuals = []
@@ -79,6 +79,36 @@ def fetch_sentiment_data():
         print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
         return {'sentiment_score': 0.0}
 
+def calculate_rsi(data, periods=3):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_bollinger_bands(data, window=5, num_std=2):
+    rolling_mean = data.rolling(window=window).mean()
+    rolling_std = data.rolling(window=window).std()
+    upper_band = rolling_mean + (rolling_std * num_std)
+    lower_band = rolling_mean - (rolling_std * num_std)
+    return upper_band, lower_band
+
+def calculate_volatility(data, window=2):
+    return data.pct_change().rolling(window=window).std()
+
+def calculate_ma(data, window=2):
+    return data.rolling(window=window).mean()
+
+def calculate_macd(data, fast=4, slow=8, signal=3):
+    exp1 = data.ewm(span=fast, adjust=False).mean()
+    exp2 = data.ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd - signal_line
+
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+    return data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
     interval_seconds = parse_interval(UPDATE_INTERVAL)
@@ -95,11 +125,6 @@ def fetch_and_preprocess_data():
     global cached_raw_data, cached_data, cached_preprocessed_data
     print(f"[{datetime.now()}] Fetching recent data for inference...")
     
-    # Temporarily disable caching to ensure fresh data
-    # if cached_preprocessed_data is not None and (time.time() - last_data_update) < parse_interval(UPDATE_INTERVAL):
-    #     print(f"[{datetime.now()}] Using cached preprocessed data: {len(cached_preprocessed_data)} rows")
-    #     return cached_preprocessed_data
-
     try:
         if DATA_PROVIDER == "coingecko":
             df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
@@ -141,6 +166,11 @@ def fetch_and_preprocess_data():
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(df)}")
 
+        # Convert relevant columns to numeric
+        for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+            for metric in ["open", "high", "low", "close", "volume"]:
+                df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
+
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         if TIMEFRAME != "1m":
@@ -165,6 +195,10 @@ def fetch_and_preprocess_data():
             df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
             df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
+        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
+        print(f"[{datetime.now()}] After adding cross-asset correlations rows: {len(df)}")
+
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
@@ -180,33 +214,6 @@ def fetch_and_preprocess_data():
     except Exception as e:
         print(f"[{datetime.now()}] Error preprocessing data: {str(e)}")
         return cached_preprocessed_data if cached_preprocessed_data is not None else pd.DataFrame()
-
-def calculate_rsi(data, periods=3):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_bollinger_bands(data, window=5, num_std=2):
-    rolling_mean = data.rolling(window=window).mean()
-    rolling_std = data.rolling(window=window).std()
-    upper_band = rolling_mean + (rolling_std * num_std)
-    lower_band = rolling_mean - (rolling_std * num_std)
-    return upper_band, lower_band
-
-def calculate_volatility(data, window=2):
-    return data.pct_change().rolling(window=window).std()
-
-def calculate_ma(data, window=2):
-    return data.rolling(window=window).mean()
-
-def calculate_macd(data, fast=4, slow=8, signal=3):
-    exp1 = data.ewm(span=fast, adjust=False).mean()
-    exp2 = data.ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd - signal_line
 
 def update_data():
     global model_metrics, cached_features
