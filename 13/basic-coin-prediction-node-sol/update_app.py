@@ -50,16 +50,14 @@ def generate_features_sol(data):
             for i in range(1, 4):
                 features[f"{col}_SOLUSDT_lag{i}"] = data_tf[col].shift(i)
         
-        features["vol智能派生"] = pd.DataFrame({
-            "volatility_SOLUSDT": calculate_volatility(data_tf["close"], window=3),
-            "ma3_SOLUSDT": calculate_ma(data_tf["close"], window=3),
-            "macd_SOLUSDT": calculate_macd(data_tf["close"]),
-            "rsi_SOLUSDT": calculate_rsi(data_tf["close"]),
-            "bb_upper_SOLUSDT": calculate_bollinger_bands(data_tf["close"])[0],
-            "bb_lower_SOLUSDT": calculate_bollinger_bands(data_tf["close"])[1],
-            "volume_SOLUSDT": data_tf["volume"].shift(1),
-            "hour_of_day": data_tf.index.hour
-        })
+        features["volatility_SOLUSDT"] = calculate_volatility(data_tf["close"], window=3)
+        features["ma3_SOLUSDT"] = calculate_ma(data_tf["close"], window=3)
+        features["macd_SOLUSDT"] = calculate_macd(data_tf["close"])
+        features["rsi_SOLUSDT"] = calculate_rsi(data_tf["close"])
+        features["bb_upper_SOLUSDT"], features["bb_lower_SOLUSDT"] = calculate_bollinger_bands(data_tf["close"])
+        features["volume_SOLUSDT"] = data_tf["volume"].shift(1)
+        features["hour_of_day"] = data_tf.index.hour
+        
         current = data_tf["close"]
         future = data_tf["close"].shift(-1)
         features["target_SOLUSDT"] = calculate_log_return(current, future)
