@@ -196,8 +196,7 @@ def fetch_and_preprocess_data():
             df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
-        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
-        print(f"[{datetime.now()}] After adding cross-asset correlations rows: {len(df)}")
+        print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(df)}")
 
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
@@ -208,6 +207,7 @@ def fetch_and_preprocess_data():
 
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
         print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
+        print(f"[{datetime.now()}] App inference features generated: {list(df.columns)}")
 
         cached_preprocessed_data = df
         return df
