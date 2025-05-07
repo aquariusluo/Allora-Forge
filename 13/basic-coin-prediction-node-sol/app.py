@@ -63,15 +63,15 @@ def calculate_ma(data, window=2):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_bollinger_width(data, window=5, num_std=2):
+def calculate_macd(data, fast=4, slow=8, signal=3):
     try:
-        rolling_mean = data.rolling(window=window).mean()
-        rolling_std = data.rolling(window=window).std()
-        upper_band = rolling_mean + (rolling_std * num_std)
-        lower_band = rolling_mean - (rolling_std * num_std)
-        return (upper_band - lower_band) / rolling_mean
+        exp1 = data.ewm(span=fast, adjust=False).mean()
+        exp2 = data.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating Bollinger width: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def calculate_volume_change(data, window=1):
@@ -81,13 +81,6 @@ def calculate_volume_change(data, window=1):
         print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volume_weighted_price(data_price, data_volume, window=3):
-    try:
-        return (data_price * data_volume).rolling(window=window).sum() / data_volume.rolling(window=window).sum()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume-weighted price: {str(e)}")
-        return pd.Series(0, index=data_price.index)
-
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
         corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
@@ -96,12 +89,12 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volume_momentum(data_volume, window=3):
+def calculate_rsi_ratio(data_rsi1, data_rsi2):
     try:
-        return data_volume.rolling(window=window).mean() / data_volume.rolling(window=window*2).mean() - 1
+        return data_rsi1 / (data_rsi2 + 1e-10)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume momentum: {str(e)}")
-        return pd.Series(0, index=data_volume.index)
+        print(f"[{datetime.now()}] Error calculating RSI ratio: {str(e)}")
+        return pd.Series(0, index=data_rsi1.index)
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -179,14 +172,13 @@ def fetch_and_preprocess_data():
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
             df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
-            df[f"bb_width_{pair}"] = calculate_bollinger_width(df[f"close_{pair}"])
+            df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
             df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
-            df[f"vw_price_{pair}"] = calculate_volume_weighted_price(df[f"close_{pair}"], df[f"volume_{pair}"])
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
         df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
         df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
-        df["volume_momentum"] = calculate_volume_momentum(df["volume_SOLUSDT"])
+        df["sol_btc_rsi_ratio"] = calculate_rsi_ratio(df["rsi_SOLUSDT"], df["rsi_BTCUSDT"])
         df["hour_of_day"] = df.index.hour
 
         # Convert all generated features to numeric
@@ -335,5 +327,5 @@ def update():
 
 if __name__ == "__main__":
     Thread(target=update_data_periodically).start()
-    print(f"[{datetime.now()}] Starting Flask server...")
+    print(f"[{datetime.now()]] Starting Flask server...")
     app.run(host="0.0.0.0", port=8000)
