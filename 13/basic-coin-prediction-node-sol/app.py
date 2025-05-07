@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from threading import Thread
+from threading import Thread, Timer
 from flask import Flask, Response
 from model import download_data, format_data, train_model, get_inference
 from config import model_file_path, scaler_file_path, TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER, UPDATE_INTERVAL, CG_API_KEY
@@ -10,7 +10,6 @@ import requests
 from scipy.stats import pearsonr
 import pandas as pd
 from updater import download_binance_current_day_data, download_coingecko_current_day_data
-import timeout_decorator
 
 app = Flask(__name__)
 
@@ -41,6 +40,7 @@ cached_data = None
 last_data_update = 0
 cached_raw_data = None
 cached_preprocessed_data = None
+update_timeout_flag = False
 
 def parse_interval(interval):
     try:
@@ -114,9 +114,8 @@ def calculate_rsi_ratio(data_rsi1, data_rsi2):
         print(f"[{datetime.now()}] Error calculating RSI ratio: {str(e)}")
         return pd.Series(0, index=data_rsi1.index)
 
-@timeout_decorator.timeout(600)  # 10-minute timeout for update_data
-def update_data(retries=3, backoff=2):
-    global model_metrics, cached_features
+def update_data(retries=3, backoff=2, timeout=600):
+    global model_metrics, cached_features, update_timeout_flag
     for attempt in range(retries):
         try:
             print(f"[{datetime.now()}] Starting data update process (attempt {attempt+1}/{retries})...")
@@ -170,6 +169,10 @@ def update_data(retries=3, backoff=2):
             return
         except Exception as e:
             print(f"[{datetime.now()}] Update failed (attempt {attempt+1}/{retries}): {str(e)}")
+            if update_timeout_flag:
+                print(f"[{datetime.now()}] Update timed out")
+                update_timeout_flag = False
+                break
             if attempt < retries - 1:
                 time.sleep(backoff ** attempt)
     print(f"[{datetime.now()}] All update attempts failed.")
