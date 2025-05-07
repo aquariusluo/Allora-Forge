@@ -1,5 +1,5 @@
 import os
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import pathlib
 import time
 import requests
@@ -33,24 +33,24 @@ def download_url(url, download_path, name=None):
         dir_path = os.path.dirname(file_name)
         pathlib.Path(dir_path).mkdir(parents=True, exist_ok=True)
         if os.path.isfile(file_name):
-            print(f"File already exists, skipping: {file_name}")
+            print(f"[{datetime.now()}] File already exists, skipping: {file_name}")
             files.append(file_name)
             return
-        print(f"Attempting to download: {url}")
+        print(f"[{datetime.now()}] Attempting to download: {url}")
         response = session.get(url, timeout=5)
         if response.status_code == 200:
             with open(file_name, 'wb') as f:
                 f.write(response.content)
-            print(f"Downloaded: {url} to {file_name}")
+            print(f"[{datetime.now()}] Downloaded: {url} to {file_name}")
             files.append(file_name)
         else:
-            print(f"Failed to download {url}, status code: {response.status_code}")
+            print(f"[{datetime.now()}] Failed to download {url}, status code: {response.status_code}")
     except Exception as e:
-        print(f"Error downloading {url}: {str(e)}")
+        print(f"[{datetime.now()}] Error downloading {url}: {str(e)}")
 
 def daterange(start_date, end_date):
     days = int((end_date - start_date).days)
-    print(f"Date range: {start_date} to {end_date}, {days} days")
+    print(f"[{datetime.now()}] Date range: {start_date} to {end_date}, {days} days")
     for n in range(days):
         yield start_date + timedelta(n)
 
@@ -58,7 +58,7 @@ def download_binance_daily_data(pair, training_days, region, download_path):
     base_url = f"https://data.binance.vision/data/spot/daily/klines"
     end_date = date.today() - timedelta(days=1)
     start_date = end_date - timedelta(days=int(training_days))
-    print(f"Downloading {pair} data from {start_date} to {end_date}")
+    print(f"[{datetime.now()}] Downloading {pair} data from {start_date} to {end_date}")
     
     global files
     files = []
@@ -71,12 +71,12 @@ def download_binance_daily_data(pair, training_days, region, download_path):
     downloaded_files = [os.path.join(download_path, f"{pair}-1m-{d}.zip") 
                         for d in daterange(start_date, end_date) 
                         if os.path.exists(os.path.join(download_path, f"{pair}-1m-{d}.zip"))]
-    print(f"Filtered {pair} files: {downloaded_files[:5]}, total: {len(downloaded_files)}")
+    print(f"[{datetime.now()}] Filtered {pair} files: {downloaded_files[:5]}, total: {len(downloaded_files)}")
     return downloaded_files
 
 def fetch_batch(pair, region, end_time, limit):
     url = f'https://api.binance.{region}/api/v3/klines?symbol={pair}&interval=1m&limit={limit}&endTime={end_time}'
-    print(f"Fetching {pair} data batch from: {url}")
+    print(f"[{datetime.now()}] Fetching {pair} data batch from: {url}")
     try:
         response = session.get(url, timeout=5)
         response.raise_for_status()
@@ -88,12 +88,12 @@ def fetch_batch(pair, region, end_time, limit):
         print(f"[{datetime.now()}] Fetched {len(df)} rows for {pair} batch")
         return df
     except Exception as e:
-        print(f"Error fetching {pair} data batch: {str(e)}")
+        print(f"[{datetime.now()}] Error fetching {pair} data batch: {str(e)}")
         return pd.DataFrame()
 
 def download_binance_current_day_data(pair, region):
     limit = 1000
-    total_minutes = 20160  # 14 days
+    total_minutes = 43200  # 30 days
     requests_needed = (total_minutes + limit - 1) // limit
     dfs = []
     end_time = int(time.time() * 1000)
@@ -116,7 +116,7 @@ def download_binance_current_day_data(pair, region):
     combined_df = pd.concat(dfs).sort_values('end_time').reset_index(drop=True)
     if len(combined_df) > total_minutes:
         combined_df = combined_df.iloc[-total_minutes:]
-    print(f"Total {pair} live data rows fetched: {len(combined_df)}")
+    print(f"[{datetime.now()}] Total {pair} live data rows fetched: {len(combined_df)}")
     return combined_df
 
 def get_coingecko_coin_id(token):
@@ -149,21 +149,21 @@ def download_coingecko_data(token, training_days, download_path, CG_API_KEY):
         days = 365
     else:
         days = "max"
-    print(f"Days: {days}")
+    print(f"[{datetime.now()}] Days: {days}")
     coin_id = get_coingecko_coin_id(token)
-    print(f"Coin ID: {coin_id}")
+    print(f"[{datetime.now()}] Coin ID: {coin_id}")
     url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc?vs_currency=usd&days={days}&api_key={CG_API_KEY}'
     global files
     files = []
     with ThreadPoolExecutor(max_workers=2) as executor:
-        print(f"Downloading data for {coin_id}")
+        print(f"[{datetime.now()}] Downloading data for {coin_id}")
         name = os.path.basename(url).split("?")[0].replace("/", "_") + ".json"
         executor.submit(download_url, url, download_path, name)
     return files
 
 def download_coingecko_current_day_data(token, CG_API_KEY):
     coin_id = get_coingecko_coin_id(token)
-    print(f"Coin ID: {coin_id}")
+    print(f"[{datetime.now()}] Coin ID: {coin_id}")
     url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc?vs_currency=usd&days=1&api_key={CG_API_KEY}'
     try:
         response = session.get(url, timeout=5)
@@ -175,7 +175,7 @@ def download_coingecko_current_day_data(token, CG_API_KEY):
         df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].apply(pd.to_numeric)
         return df.sort_values('date').reset_index(drop=True)
     except Exception as e:
-        print(f"Error fetching CoinGecko data for {token}: {str(e)}")
+        print(f"[{datetime.now()}] Error fetching CoinGecko data for {token}: {str(e)}")
         return pd.DataFrame()
 
 if __name__ == "__main__":
