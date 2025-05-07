@@ -10,6 +10,7 @@ import requests
 from scipy.stats import pearsonr
 import pandas as pd
 from updater import download_binance_current_day_data, download_coingecko_current_day_data
+import timeout_decorator
 
 app = Flask(__name__)
 
@@ -112,6 +113,66 @@ def calculate_rsi_ratio(data_rsi1, data_rsi2):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating RSI ratio: {str(e)}")
         return pd.Series(0, index=data_rsi1.index)
+
+@timeout_decorator.timeout(600)  # 10-minute timeout for update_data
+def update_data(retries=3, backoff=2):
+    global model_metrics, cached_features
+    for attempt in range(retries):
+        try:
+            print(f"[{datetime.now()}] Starting data update process (attempt {attempt+1}/{retries})...")
+            data_dir = os.path.join(os.getcwd(), "data", "binance")
+            price_data_file = os.path.join(os.getcwd(), "data", "price_data.csv")
+            model_file = model_file_path
+            scaler_file = scaler_file_path
+
+            # Clear existing model and scaler files to force retraining
+            for path in [model_file, scaler_file]:
+                if os.path.exists(path):
+                    os.remove(path)
+                    print(f"[{datetime.now()}] Cleared {path}")
+
+            # Clear price data
+            for path in [data_dir, price_data_file]:
+                if os.path.exists(path):
+                    if os.path.isdir(path):
+                        for f in os.listdir(path):
+                            os.remove(os.path.join(path, f))
+                    else:
+                        os.remove(path)
+                    print(f"[{datetime.now()}] Cleared {path}")
+            
+            print(f"[{datetime.now()}] Downloading BTC data...")
+            files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            print(f"[{datetime.now()}] Downloading SOL data...")
+            files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            print(f"[{datetime.now()}] Downloading ETH data...")
+            files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
+            if not files_btc or not files_sol or not files_eth:
+                print(f"[{datetime.now()}] Warning: No data files downloaded for one or more pairs.")
+                raise ValueError("Data download failed")
+            print(f"[{datetime.now()}] Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}, ETH: {len(files_eth)}")
+
+            print(f"[{datetime.now()}] Formatting data...")
+            df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+            if df.empty:
+                print(f"[{datetime.now()}] Error: Data formatting returned empty DataFrame")
+                raise ValueError("Data formatting failed")
+            
+            print(f"[{datetime.now()}] Training model...")
+            model, scaler, metrics, features = train_model(TIMEFRAME)
+            if model is None:
+                print(f"[{datetime.now()}] Error: Training failed, model is None")
+                raise ValueError("Model training failed")
+            
+            model_metrics.update(metrics)
+            cached_features = features
+            print(f"[{datetime.now()}] Data update and training completed.")
+            return
+        except Exception as e:
+            print(f"[{datetime.now()}] Update failed (attempt {attempt+1}/{retries}): {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    print(f"[{datetime.now()}] All update attempts failed.")
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -216,65 +277,6 @@ def fetch_and_preprocess_data():
         cached_preprocessed_data = None
         return pd.DataFrame()
 
-def update_data(retries=3, backoff=2):
-    global model_metrics, cached_features
-    for attempt in range(retries):
-        try:
-            print(f"[{datetime.now()}] Starting data update process (attempt {attempt+1}/{retries})...")
-            data_dir = os.path.join(os.getcwd(), "data", "binance")
-            price_data_file = os.path.join(os.getcwd(), "data", "price_data.csv")
-            model_file = model_file_path
-            scaler_file = scaler_file_path
-
-            # Clear existing model and scaler files to force retraining
-            for path in [model_file, scaler_file]:
-                if os.path.exists(path):
-                    os.remove(path)
-                    print(f"[{datetime.now()}] Cleared {path}")
-
-            # Only clear price data, not model files
-            for path in [data_dir, price_data_file]:
-                if os.path.exists(path):
-                    if os.path.isdir(path):
-                        for f in os.listdir(path):
-                            os.remove(os.path.join(path, f))
-                    else:
-                        os.remove(path)
-                    print(f"[{datetime.now()}] Cleared {path}")
-            
-            print(f"[{datetime.now()}] Downloading BTC data...")
-            files_btc = download_data("BTC", TRAINING_DAYS, REGION, DATA_PROVIDER)
-            print(f"[{datetime.now()}] Downloading SOL data...")
-            files_sol = download_data("SOL", TRAINING_DAYS, REGION, DATA_PROVIDER)
-            print(f"[{datetime.now()}] Downloading ETH data...")
-            files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
-            if not files_btc or not files_sol or not files_eth:
-                print(f"[{datetime.now()}] Warning: No data files downloaded for one or more pairs.")
-                raise ValueError("Data download failed")
-            print(f"[{datetime.now()}] Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}, ETH: {len(files_eth)}")
-
-            print(f"[{datetime.now()}] Formatting data...")
-            df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
-            if df.empty:
-                print(f"[{datetime.now()}] Error: Data formatting returned empty DataFrame")
-                raise ValueError("Data formatting failed")
-            
-            print(f"[{datetime.now()}] Training model...")
-            model, scaler, metrics, features = train_model(TIMEFRAME)
-            if model is None:
-                print(f"[{datetime.now()}] Error: Training failed, model is None")
-                raise ValueError("Model training failed")
-            
-            model_metrics.update(metrics)
-            cached_features = features
-            print(f"[{datetime.now()}] Data update and training completed.")
-            return
-        except Exception as e:
-            print(f"[{datetime.now()}] Update failed (attempt {attempt+1}/{retries}): {str(e)}")
-            if attempt < retries - 1:
-                time.sleep(backoff ** attempt)
-    print(f"[{datetime.now()}] All update attempts failed.")
-
 @app.route("/inference/<string:token>")
 def generate_inference(token):
     global cached_data, cached_features, model_metrics, last_data_update
@@ -310,8 +312,8 @@ def generate_inference(token):
         baseline_mztae = model_metrics.get('baseline_mztae', 1.0)
         test_weighted_rmse = model_metrics.get('test_weighted_rmse', float('inf'))
         test_mztae = model_metrics.get('test_mztae', float('inf'))
-        rmse_improvement = 100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse if baseline_rmse != 0 else float('inf')
-        mztae_improvement = 100 * (baseline_mztae - test_mztae) / baseline_mztae if baseline_mztae != 0 else float('inf')
+        rmse_improvement = 100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse if baseline_rmse != 0 else 0.0
+        mztae_improvement = 100 * (baseline_mztae - test_mztae) / baseline_mztae if baseline_mztae != 0 else 0.0
 
         metrics_log = (
             f"[{datetime.now()}] Model Metrics:\n"
@@ -379,6 +381,10 @@ if __name__ == "__main__":
     if os.path.exists(scaler_file_path):
         os.remove(scaler_file_path)
         print(f"[{datetime.now()}] Cleared scaler file {scaler_file_path} to force retraining")
+    
+    # Run update_data synchronously on startup
+    print(f"[{datetime.now()}] Running initial data update...")
+    update_data()
     
     Thread(target=update_data_periodically).start()
     print(f"[{datetime.now()}] Starting Flask server...")
