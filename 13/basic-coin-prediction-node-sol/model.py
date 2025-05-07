@@ -1,4 +1,3 @@
-# Test R²: 0.02697
 import json
 import os
 import pickle
@@ -22,7 +21,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v34"
+MODEL_VERSION = "2025-05-07-optimized-v35"
 TRAINING_DAYS = 360
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
@@ -56,25 +55,6 @@ def download_data(token, training_days, region, data_provider):
         print(f"[{datetime.now()}] Error downloading data for {token}: {str(e)}")
         return []
 
-def fetch_solana_onchain_data():
-    try:
-        url = "https://api.mainnet-beta.solana.com"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getRecentPerformanceSamples",
-            "params": [1]
-        }
-        response = requests.post(url, headers=headers, json=payload, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
-        return {'tx_volume': tx_volume}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
-        return {'tx_volume': 0}
-
 def calculate_rsi(data, periods=3):
     try:
         delta = data.diff()
@@ -100,12 +80,15 @@ def calculate_ma(data, window=2):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+def calculate_bollinger_width(data, window=5, num_std=2):
     try:
-        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
-        return corr.fillna(0)
+        rolling_mean = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return (upper_band - lower_band) / rolling_mean
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating Bollinger width: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def calculate_volume_change(data, window=1):
@@ -115,15 +98,27 @@ def calculate_volume_change(data, window=1):
         print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def fetch_sentiment_data():
+def calculate_volume_weighted_price(data_price, data_volume, window=3):
     try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
+        return (data_price * data_volume).rolling(window=window).sum() / data_volume.rolling(window=window).sum()
     except Exception as e:
-        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
-        return {'sentiment_score': 0.0}
+        print(f"[{datetime.now()}] Error calculating volume-weighted price: {str(e)}")
+        return pd.Series(0, index=data_price.index)
+
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+    try:
+        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+        return corr.fillna(0)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_volume_momentum(data_volume, window=3):
+    try:
+        return data_volume.rolling(window=window).mean() / data_volume.rolling(window=window*2).mean() - 1
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volume momentum: {str(e)}")
+        return pd.Series(0, index=data_volume.index)
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
     try:
@@ -226,8 +221,6 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             })
         print(f"[{datetime.now()}] After resampling rows: {len(price_df)}")
 
-        price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
-
         # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
@@ -236,16 +229,15 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
+            price_df[f"bb_width_{pair}"] = calculate_bollinger_width(price_df[f"close_{pair}"])
             price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
+            price_df[f"vw_price_{pair}"] = calculate_volume_weighted_price(price_df[f"close_{pair}"], price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
         price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
+        price_df["volume_momentum"] = calculate_volume_momentum(price_df["volume_SOLUSDT"])
         price_df["hour_of_day"] = price_df.index.hour
-        onchain_data = fetch_solana_onchain_data()
-        price_df["sol_tx_volume"] = onchain_data['tx_volume']
-        sentiment_data = fetch_sentiment_data()
-        price_df["sentiment_score"] = sentiment_data['sentiment_score']
 
         price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
 
@@ -254,6 +246,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         for col in feature_columns:
             price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
 
+        price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
         price_df = price_df.dropna(subset=["target_SOLUSDT"])
         print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
@@ -287,8 +280,8 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3", "volume_change"]
-        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
+            for feature in ["rsi", "volatility", "ma3", "bb_width", "volume_change", "vw_price"]
+        ] + ["hour_of_day", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "volume_momentum"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -302,7 +295,7 @@ def load_frame(file_path, timeframe):
             print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(25, len(features)))
         X_selected = selector.fit_transform(X, y)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
@@ -392,12 +385,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         elif MODEL == "LightGBM":
             model = lgb.LGBMRegressor(
                 objective='regression',
-                learning_rate=0.01,
+                learning_rate=0.015,
                 max_depth=5,
-                n_estimators=400,
+                n_estimators=500,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                num_leaves=8,
+                num_leaves=12,
                 min_child_samples=100
             )
             model.fit(X_train, y_train, feature_name=features)
@@ -438,7 +431,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")  # Adjusted for LightGBM
+        print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model.feature_importances_)), key=lambda x: x[1], reverse=True)}")
 
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
         with open(model_file_path, "wb") as f:
@@ -519,8 +512,6 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 for metric in ["open", "high", "low", "close", "volume"]:
                     df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
 
-            df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
-
             if TIMEFRAME != "1m":
                 df = df.resample(TIMEFRAME, closed='right', label='right').agg({
                     f"{metric}_{pair}": "last"
@@ -535,16 +526,15 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
                 df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+                df[f"bb_width_{pair}"] = calculate_bollinger_width(df[f"close_{pair}"])
                 df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
+                df[f"vw_price_{pair}"] = calculate_volume_weighted_price(df[f"close_{pair}"], df[f"volume_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
             df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
+            df["volume_momentum"] = calculate_volume_momentum(df["volume_SOLUSDT"])
             df["hour_of_day"] = df.index.hour
-            onchain_data = fetch_solana_onchain_data()
-            df["sol_tx_volume"] = onchain_data['tx_volume']
-            sentiment_data = fetch_sentiment_data()
-            df["sentiment_score"] = sentiment_data['sentiment_score']
 
             # Convert all generated features to numeric
             feature_columns = [col for col in df.columns if col != 'hour_of_day']
