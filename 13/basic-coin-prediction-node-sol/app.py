@@ -57,22 +57,6 @@ def fetch_solana_onchain_data():
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0}
 
-def fetch_binance_order_book(pair, region):
-    try:
-        url = f"https://api.binance.{region}/api/v3/depth?symbol={pair}&limit=10"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        bid_volume = sum(float(bid[1]) for bid in data["bids"])
-        ask_volume = sum(float(ask[1]) for ask in data["asks"])
-        return {
-            'bid_ask_ratio': bid_volume / (ask_volume + 1e-10),
-            'order_book_imbalance': (bid_volume - ask_volume) / (bid_volume + ask_volume + 1e-10)
-        }
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
-        return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
-
 def calculate_rsi(data, periods=3):
     try:
         delta = data.diff()
@@ -84,11 +68,26 @@ def calculate_rsi(data, periods=3):
         print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
         return pd.Series(0, index=data.index)
 
+def calculate_volatility(data, window=2):
+    try:
+        return data.pct_change().rolling(window=window).std()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volatility: {str(e)}")
+        return pd.Series(0, index=data.index)
+
 def calculate_ma(data, window=2):
     try:
         return data.rolling(window=window).mean()
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
+    try:
+        corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+        return corr.fillna(0)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def update_data_periodically():
@@ -164,19 +163,27 @@ def fetch_and_preprocess_data():
         print(f"[{datetime.now()}] After resampling rows: {len(df)}")
 
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-            for metric in ["close"]:
-                for lag in range(1, 3):
-                    df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
+            for lag in [1, 2, 3, 6]:
+                df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
+            df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
 
+        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+        df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
 
+        # Convert all generated features to numeric
+        feature_columns = [col for col in df.columns if col != 'hour_of_day']
+        for col in feature_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
         print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
         print(f"[{datetime.now()}] App inference features generated: {list(df.columns)}")
+        print(f"[{datetime.now()}] App inference NaN counts: {df.isna().sum().to_dict()}")
 
         cached_preprocessed_data = df
         return df
@@ -263,7 +270,9 @@ def generate_inference(token):
             f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n"
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
             f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
-            f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}"
+            f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
+            f"Weighted RMSE Improvement: {model_metrics.get('test_weighted_rmse', float('inf')) / model_metrics.get('baseline_rmse', 1):.2%}\n"
+            f"Weighted MZTAE Improvement: {model_metrics.get('test_mztae', float('inf')) / model_metrics.get('baseline_mztae', 1):.2%}"
         )
         print(metrics_log)
         
