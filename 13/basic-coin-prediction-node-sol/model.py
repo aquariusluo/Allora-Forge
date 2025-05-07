@@ -21,8 +21,8 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v35"
-TRAINING_DAYS = 360
+MODEL_VERSION = "2025-05-07-optimized-v36"
+TRAINING_DAYS = 720
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -80,15 +80,15 @@ def calculate_ma(data, window=2):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_bollinger_width(data, window=5, num_std=2):
+def calculate_macd(data, fast=4, slow=8, signal=3):
     try:
-        rolling_mean = data.rolling(window=window).mean()
-        rolling_std = data.rolling(window=window).std()
-        upper_band = rolling_mean + (rolling_std * num_std)
-        lower_band = rolling_mean - (rolling_std * num_std)
-        return (upper_band - lower_band) / rolling_mean
+        exp1 = data.ewm(span=fast, adjust=False).mean()
+        exp2 = data.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating Bollinger width: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def calculate_volume_change(data, window=1):
@@ -98,13 +98,6 @@ def calculate_volume_change(data, window=1):
         print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volume_weighted_price(data_price, data_volume, window=3):
-    try:
-        return (data_price * data_volume).rolling(window=window).sum() / data_volume.rolling(window=window).sum()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume-weighted price: {str(e)}")
-        return pd.Series(0, index=data_price.index)
-
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
         corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
@@ -113,12 +106,12 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volume_momentum(data_volume, window=3):
+def calculate_rsi_ratio(data_rsi1, data_rsi2):
     try:
-        return data_volume.rolling(window=window).mean() / data_volume.rolling(window=window*2).mean() - 1
+        return data_rsi1 / (data_rsi2 + 1e-10)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume momentum: {str(e)}")
-        return pd.Series(0, index=data_volume.index)
+        print(f"[{datetime.now()}] Error calculating RSI ratio: {str(e)}")
+        return pd.Series(0, index=data_rsi1.index)
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
     try:
@@ -229,14 +222,13 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
-            price_df[f"bb_width_{pair}"] = calculate_bollinger_width(price_df[f"close_{pair}"])
+            price_df[f"macd_{pair}"] = calculate_macd(price_df[f"close_{pair}"])
             price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
-            price_df[f"vw_price_{pair}"] = calculate_volume_weighted_price(price_df[f"close_{pair}"], price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
         price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
-        price_df["volume_momentum"] = calculate_volume_momentum(price_df["volume_SOLUSDT"])
+        price_df["sol_btc_rsi_ratio"] = calculate_rsi_ratio(price_df["rsi_SOLUSDT"], price_df["rsi_BTCUSDT"])
         price_df["hour_of_day"] = price_df.index.hour
 
         price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
@@ -252,6 +244,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
         print(f"[{datetime.now()}] NaN counts: {price_df.isna().sum().to_dict()}")
         print(f"[{datetime.now()}] Dtypes: {price_df.dtypes.to_dict()}")
+
+        # Log feature correlations with target
+        correlations = {col: abs(price_df[col].corr(price_df["target_SOLUSDT"])) for col in feature_columns if price_df[col].std() > 0}
+        print(f"[{datetime.now()}] Feature correlations with target: {sorted(correlations.items(), key=lambda x: x[1], reverse=True)}")
 
         if len(price_df) == 0:
             print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
@@ -280,8 +276,8 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3", "bb_width", "volume_change", "vw_price"]
-        ] + ["hour_of_day", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "volume_momentum"]
+            for feature in ["rsi", "volatility", "ma3", "macd", "volume_change"]
+        ] + ["hour_of_day", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sol_btc_rsi_ratio"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -295,7 +291,7 @@ def load_frame(file_path, timeframe):
             print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(25, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
         X_selected = selector.fit_transform(X, y)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
@@ -381,43 +377,62 @@ def train_model(timeframe, file_path=training_price_data_path):
                 verbose=2
             )
             grid_search.fit(X_train, y_train)
-            model = grid_search.best_estimator_
+            model_reg = grid_search.best_estimator_
         elif MODEL == "LightGBM":
-            model = lgb.LGBMRegressor(
+            model_reg = lgb.LGBMRegressor(
                 objective='regression',
-                learning_rate=0.015,
+                learning_rate=0.01,
                 max_depth=5,
-                n_estimators=500,
+                n_estimators=400,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                num_leaves=12,
+                num_leaves=8,
                 min_child_samples=100
             )
-            model.fit(X_train, y_train, feature_name=features)
+            model_reg.fit(X_train, y_train, feature_name=features)
         else:
             raise ValueError(f"Unsupported model: {MODEL}")
 
-        pred_train = model.predict(X_train)
-        pred_test = model.predict(X_test)
+        # Classification model for directional accuracy
+        y_train_sign = np.sign(y_train)
+        model_clf = lgb.LGBMClassifier(
+            objective='binary',
+            learning_rate=0.01,
+            max_depth=5,
+            n_estimators=100,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            num_leaves=8,
+            min_child_samples=100
+        )
+        model_clf.fit(X_train, y_train_sign, feature_name=features)
+
+        pred_train = model_reg.predict(X_train)
+        pred_test = model_reg.predict(X_test)
+        pred_train_sign = model_clf.predict(X_train)
+        pred_test_sign = model_clf.predict(X_test)
+
+        # Combine regression and classification predictions
+        pred_test_adjusted = pred_test * pred_test_sign
 
         # Check prediction variance
-        pred_test_std = np.std(pred_test)
+        pred_test_std = np.std(pred_test_adjusted)
         if pred_test_std < 1e-10:
             print(f"[{datetime.now()}] Warning: Constant predictions detected (std: {pred_test_std:.6e}), model may be underfitting")
 
         weights = np.abs(y_test)
         train_mae = mean_absolute_error(y_train, pred_train)
-        test_mae = mean_absolute_error(y_test, pred_test)
+        test_mae = mean_absolute_error(y_test, pred_test_adjusted)
         train_rmse = np.sqrt(mean_squared_error(y_train, pred_train))
-        test_rmse = np.sqrt(mean_squared_error(y_test, pred_test))
+        test_rmse = np.sqrt(mean_squared_error(y_test, pred_test_adjusted))
         train_r2 = r2_score(y_train, pred_train)
-        test_r2 = r2_score(y_test, pred_test)
+        test_r2 = r2_score(y_test, pred_test_adjusted)
         train_weighted_rmse = weighted_rmse(y_train, pred_train, np.abs(y_train))
-        test_weighted_rmse = weighted_rmse(y_test, pred_test, weights)
+        test_weighted_rmse = weighted_rmse(y_test, pred_test_adjusted, weights)
         train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
-        test_mztae = weighted_mztae(y_test, pred_test, weights)
-        directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
-        correlation, p_value = pearsonr(y_test, pred_test)
+        test_mztae = weighted_mztae(y_test, pred_test_adjusted, weights)
+        directional_accuracy = np.mean(np.sign(pred_test_adjusted) == np.sign(y_test))
+        correlation, p_value = pearsonr(y_test, pred_test_adjusted)
 
         n_successes = int(directional_accuracy * len(y_test))
         binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
@@ -431,11 +446,11 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-        print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model.feature_importances_)), key=lambda x: x[1], reverse=True)}")
+        print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model_reg.feature_importances_)), key=lambda x: x[1], reverse=True)}")
 
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
         with open(model_file_path, "wb") as f:
-            pickle.dump(model, f)
+            pickle.dump({'reg': model_reg, 'clf': model_clf}, f)
         with open(scaler_file_path, "wb") as f:
             pickle.dump(scaler, f)
         print(f"[{datetime.now()}] Model saved to {model_file_path}, scaler saved to {scaler_file_path}")
@@ -459,7 +474,7 @@ def train_model(timeframe, file_path=training_price_data_path):
             'baseline_mztae': baseline_mztae
         }
 
-        return model, scaler, metrics, features
+        return {'reg': model_reg, 'clf': model_clf}, scaler, metrics, features
 
     except Exception as e:
         print(f"[{datetime.now()}] Error in train_model: {str(e)}")
@@ -471,7 +486,9 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] Error: Model file {model_file_path} not found")
             return 0.0
         with open(model_file_path, "rb") as f:
-            model = pickle.load(f)
+            models = pickle.load(f)
+        model_reg = models['reg']
+        model_clf = models['clf']
 
         df = cached_data
         if df is None:
@@ -526,14 +543,13 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
                 df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
-                df[f"bb_width_{pair}"] = calculate_bollinger_width(df[f"close_{pair}"])
+                df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
                 df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
-                df[f"vw_price_{pair}"] = calculate_volume_weighted_price(df[f"close_{pair}"], df[f"volume_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
             df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
-            df["volume_momentum"] = calculate_volume_momentum(df["volume_SOLUSDT"])
+            df["sol_btc_rsi_ratio"] = calculate_rsi_ratio(df["rsi_SOLUSDT"], df["rsi_BTCUSDT"])
             df["hour_of_day"] = df.index.hour
 
             # Convert all generated features to numeric
@@ -562,7 +578,8 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         X_scaled_df = pd.DataFrame(X_scaled, columns=features, index=X.index)
 
         last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
-        pred = model.predict(last_row)
+        pred_reg = model_reg.predict(last_row)
+        pred_clf = model_clf.predict(last_row)
 
         ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
         try:
@@ -573,7 +590,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
             return 0.0
 
-        log_return_pred = pred[0]
+        log_return_pred = pred_reg[0] * pred_clf[0]
         predicted_price = latest_price * np.exp(log_return_pred)
         print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Log Return: {log_return_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
