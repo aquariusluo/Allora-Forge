@@ -1,7 +1,7 @@
 FROM python:3.11-slim AS project_env
 
 # Install curl
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update && apt-get install -y curl libgomp1
 
 # Set the working directory in the container
 WORKDIR /app
