@@ -21,11 +21,11 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v38"
+MODEL_VERSION = "2025-05-08-optimized-v39"
 TRAINING_DAYS = 720
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
-def download_data_binance(token, training_days, region, retries=3, backoff=2):
+def download_data_binance(token, training_days, region, retries=5, backoff=2):
     for attempt in range(retries):
         try:
             files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
@@ -37,7 +37,7 @@ def download_data_binance(token, training_days, region, retries=3, backoff=2):
                 time.sleep(backoff ** attempt)
     return []
 
-def download_data_coingecko(token, training_days, retries=3, backoff=2):
+def download_data_coingecko(token, training_days, retries=5, backoff=2):
     for attempt in range(retries):
         try:
             files = download_coingecko_data(token, training_days, coingecko_data_path, CG_API_KEY)
@@ -333,6 +333,8 @@ def weighted_rmse(y_true, y_pred, weights):
 def weighted_mztae(y_true, y_pred, weights):
     try:
         ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
+        if ref_std == 0:
+            ref_std = 1.0  # Prevent division by zero
         return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
@@ -356,6 +358,7 @@ def train_model(timeframe, file_path=training_price_data_path):
             return None, None, {}, []
 
         print(f"[{datetime.now()}] Training features: {features}")
+        print(f"[{datetime.now()}] X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
 
         # Baseline: Linear Regression
         print(f"[{datetime.now()}] Training baseline linear regression model...")
@@ -411,12 +414,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         y_train_sign = np.sign(y_train)
         model_clf = lgb.LGBMClassifier(
             objective='binary',
-            learning_rate=0.01,
+            learning_rate=0.02,  # Increased for better learning
             max_depth=5,
             n_estimators=200,  # Increased for better directional accuracy
             subsample=0.8,
             colsample_bytree=0.8,
-            num_leaves=8,
+            num_leaves=10,  # Increased for more complex patterns
             min_child_samples=100
         )
         model_clf.fit(X_train, y_train_sign, feature_name=features)
@@ -426,6 +429,10 @@ def train_model(timeframe, file_path=training_price_data_path):
         pred_test = model_reg.predict(X_test)
         pred_train_sign = model_clf.predict(X_train)
         pred_test_sign = model_clf.predict(X_test)
+
+        # Log classification accuracy
+        clf_accuracy = np.mean(pred_test_sign == np.sign(y_test))
+        print(f"[{datetime.now()}] Classification accuracy: {clf_accuracy:.4f}")
 
         # Combine regression and classification predictions
         pred_test_adjusted = pred_test * pred_test_sign
@@ -458,8 +465,8 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
-        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse:.2f}%")
-        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
+        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse if baseline_rmse != 0 else 0:.2f}%")
+        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae if baseline_mztae != 0 else 0:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
         print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model_reg.feature_importances_)), key=lambda x: x[1], reverse=True)}")
@@ -471,6 +478,16 @@ def train_model(timeframe, file_path=training_price_data_path):
             pickle.dump(model_dict, f)
         with open(scaler_file_path, "wb") as f:
             pickle.dump(scaler, f)
+        
+        # Verify model file
+        if os.path.exists(model_file_path):
+            with open(model_file_path, "rb") as f:
+                saved_model = pickle.load(f)
+                print(f"[{datetime.now()}] Verified model file: {saved_model.keys()}")
+        else:
+            print(f"[{datetime.now()}] Error: Model file not saved")
+            return None, None, {}, []
+
         print(f"[{datetime.now()}] Model saved to {model_file_path}, scaler saved to {scaler_file_path}")
 
         metrics = {
@@ -547,7 +564,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
             df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
             df_sol['date'] = pd.to_datetime(df_sol['date'], utc=True)
-            df_eth['date'] = pd.to_datetime(df_eth['date'], utc=True)
+            df_eth['date'] = pd.to-(df_eth['date'], utc=True)
             df_btc = df_btc.sort_values('date').drop_duplicates(subset="date", keep="last")
             df_sol = df_sol.sort_values('date').drop_duplicates(subset="date", keep="last")
             df_eth = df_eth.sort_values('date').drop_duplicates(subset="date", keep="last")
