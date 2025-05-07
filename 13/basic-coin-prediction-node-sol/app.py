@@ -327,5 +327,5 @@ def update():
 
 if __name__ == "__main__":
     Thread(target=update_data_periodically).start()
-    print(f"[{datetime.now()]] Starting Flask server...")
+    print(f"[{datetime.now()}] Starting Flask server...")
     app.run(host="0.0.0.0", port=8000)
