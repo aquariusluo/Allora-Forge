@@ -13,7 +13,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, Solana RPC) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, Solana RPC, sentiment) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 recent_predictions = []
 recent_actuals = []
@@ -48,9 +48,14 @@ def fetch_solana_onchain_data():
         response.raise_for_status()
         data = response.json()
         tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
+
+        explorer_url = "https://explorer.solana.com/stats/api/active_addresses"
+        explorer_response = requests.get(explorer_url, timeout=5)
+        active_addresses = explorer_response.json().get("active_addresses", 0) if explorer_response.status_code == 200 else 0
+
         return {
             'tx_volume': tx_volume,
-            'active_addresses': 0
+            'active_addresses': active_addresses
         }
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
@@ -71,6 +76,17 @@ def fetch_binance_order_book(pair, region):
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
         return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
+
+def fetch_sentiment_data():
+    try:
+        positive_keywords = ["bullish", "buy", "up", "solana moon"]
+        negative_keywords = ["bearish", "sell", "down", "crash"]
+        sentiment_score = 0.0
+        sentiment_score += 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        return {'sentiment_score': sentiment_score}
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
+        return {'sentiment_score': 0.0}
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -131,12 +147,10 @@ def fetch_and_preprocess_data():
         df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
 
-        df.interpolate(method='linear', inplace=True)
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
+        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         if TIMEFRAME != "1m":
-            df = df.resample(TIMEFRAME).agg({
+            df = df.resample(TIMEFRAME, closed='right', label='right').agg({
                 f"{metric}_{pair}": "last"
                 for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
                 for metric in ["open", "high", "low", "close", "volume"]
@@ -161,7 +175,10 @@ def fetch_and_preprocess_data():
         df["sol_tx_volume"] = onchain_data['tx_volume']
         df["sol_active_addresses"] = onchain_data['active_addresses']
 
-        df = df.interpolate(method='linear').ffill().bfill().dropna()
+        sentiment_data = fetch_sentiment_data()
+        df["sentiment_score"] = sentiment_data['sentiment_score']
+
+        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
         cached_preprocessed_data = df
         print(f"[{datetime.now()}] Preprocessed recent data: {len(df)} rows")
         return df
