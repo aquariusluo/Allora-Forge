@@ -1,3 +1,4 @@
+# Test R²: 0.02697
 import json
 import os
 import pickle
