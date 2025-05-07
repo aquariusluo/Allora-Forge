@@ -57,6 +57,16 @@ def fetch_solana_onchain_data():
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0}
 
+def fetch_sentiment_data():
+    try:
+        positive_keywords = ["bullish", "buy", "up", "solana moon"]
+        negative_keywords = ["bearish", "sell", "down", "crash"]
+        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        return {'sentiment_score': sentiment_score}
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
+        return {'sentiment_score': 0.0}
+
 def calculate_rsi(data, periods=3):
     try:
         delta = data.diff()
@@ -88,6 +98,13 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
         return corr.fillna(0)
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_volume_change(data, window=1):
+    try:
+        return data.pct_change(window).fillna(0)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def update_data_periodically():
@@ -147,7 +164,7 @@ def fetch_and_preprocess_data():
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(df)}")
 
-        # Convert relevant columns to numeric
+        # Convert initial columns to numeric
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
@@ -168,12 +185,16 @@ def fetch_and_preprocess_data():
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
             df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+            df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
         df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
+        df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
+        sentiment_data = fetch_sentiment_data()
+        df["sentiment_score"] = sentiment_data['sentiment_score']
 
         # Convert all generated features to numeric
         feature_columns = [col for col in df.columns if col != 'hour_of_day']
@@ -184,6 +205,7 @@ def fetch_and_preprocess_data():
         print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
         print(f"[{datetime.now()}] App inference features generated: {list(df.columns)}")
         print(f"[{datetime.now()}] App inference NaN counts: {df.isna().sum().to_dict()}")
+        print(f"[{datetime.now()}] App inference dtypes: {df.dtypes.to_dict()}")
 
         cached_preprocessed_data = df
         return df
@@ -271,8 +293,8 @@ def generate_inference(token):
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
             f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
             f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
-            f"Weighted RMSE Improvement: {model_metrics.get('test_weighted_rmse', float('inf')) / model_metrics.get('baseline_rmse', 1):.2%}\n"
-            f"Weighted MZTAE Improvement: {model_metrics.get('test_mztae', float('inf')) / model_metrics.get('baseline_mztae', 1):.2%}"
+            f"Weighted RMSE Improvement: {100 * (model_metrics.get('baseline_rmse', 1) - model_metrics.get('test_weighted_rmse', float('inf'))) / model_metrics.get('baseline_rmse', 1):.2f}%\n"
+            f"Weighted MZTAE Improvement: {100 * (model_metrics.get('baseline_mztae', 1) - model_metrics.get('test_mztae', float('inf'))) / model_metrics.get('baseline_mztae', 1):.2f}%"
         )
         print(metrics_log)
         
