@@ -17,7 +17,24 @@ print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM
 
 recent_predictions = []
 recent_actuals = []
-model_metrics = {}
+model_metrics = {
+    'train_mae': 0.0,
+    'test_mae': 0.0,
+    'train_rmse': 0.0,
+    'test_rmse': 0.0,
+    'train_r2': 0.0,
+    'test_r2': 0.0,
+    'train_weighted_rmse': 0.0,
+    'test_weighted_rmse': 0.0,
+    'train_mztae': 0.0,
+    'test_mztae': 0.0,
+    'directional_accuracy': 0.0,
+    'correlation': 0.0,
+    'correlation_p_value': 1.0,
+    'binom_p_value': 1.0,
+    'baseline_rmse': 1.0,
+    'baseline_mztae': 1.0
+}
 cached_features = None
 cached_data = None
 last_data_update = 0
@@ -207,6 +224,12 @@ def update_data():
     model_file = model_file_path
     scaler_file = scaler_file_path
 
+    # Clear existing model and scaler files to force retraining
+    for path in [model_file, scaler_file]:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"[{datetime.now()}] Cleared {path}")
+
     # Only clear price data, not model files
     for path in [data_dir, price_data_file]:
         if os.path.exists(path):
@@ -238,7 +261,7 @@ def update_data():
         if model is None:
             print(f"[{datetime.now()}] Error: Training failed, model is None")
             return
-        model_metrics = metrics
+        model_metrics.update(metrics)
         cached_features = features
         print(f"[{datetime.now()}] Data update and training completed.")
     except Exception as e:
@@ -262,11 +285,22 @@ def generate_inference(token):
                 return Response("Failed to preprocess data", status=500, mimetype='text/plain')
         
         inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
+        if inference == 0.0:
+            print(f"[{datetime.now()}] Warning: Inference returned 0.0, possible model or data issue")
+            update_data()  # Retry training if inference fails
+            inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
         
         recent_predictions.append(inference)
         if len(recent_predictions) > 100:
             recent_predictions.pop(0)
         
+        baseline_rmse = model_metrics.get('baseline_rmse', 1.0)
+        baseline_mztae = model_metrics.get('baseline_mztae', 1.0)
+        test_weighted_rmse = model_metrics.get('test_weighted_rmse', float('inf'))
+        test_mztae = model_metrics.get('test_mztae', float('inf'))
+        rmse_improvement = 100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse if baseline_rmse != 0 else float('inf')
+        mztae_improvement = 100 * (baseline_mztae - test_mztae) / baseline_mztae if baseline_mztae != 0 else float('inf')
+
         metrics_log = (
             f"[{datetime.now()}] Model Metrics:\n"
             f"Training MAE: {model_metrics.get('train_mae', 0):.6f}\n"
@@ -276,10 +310,10 @@ def generate_inference(token):
             f"Test RMSE (log returns): {model_metrics.get('test_rmse', 0):.6f}\n"
             f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n"
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
-            f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
-            f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
-            f"Weighted RMSE Improvement: {100 * (model_metrics.get('baseline_rmse', 1) - model_metrics.get('test_weighted_rmse', float('inf'))) / model_metrics.get('baseline_rmse', 1):.2f}%\n"
-            f"Weighted MZTAE Improvement: {100 * (model_metrics.get('baseline_mztae', 1) - model_metrics.get('test_mztae', float('inf'))) / model_metrics.get('baseline_mztae', 1):.2f}%"
+            f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 1):.4f}\n"
+            f"Binomial Test p-value: {model_metrics.get('binom_p_value', 1):.4f}\n"
+            f"Weighted RMSE Improvement: {rmse_improvement:.2f}%\n"
+            f"Weighted MZTAE Improvement: {mztae_improvement:.2f}%"
         )
         print(metrics_log)
         
@@ -326,6 +360,14 @@ def update():
         return "1"
 
 if __name__ == "__main__":
+    # Clear model file on startup to ensure fresh training
+    if os.path.exists(model_file_path):
+        os.remove(model_file_path)
+        print(f"[{datetime.now()}] Cleared model file {model_file_path} to force retraining")
+    if os.path.exists(scaler_file_path):
+        os.remove(scaler_file_path)
+        print(f"[{datetime.now()}] Cleared scaler file {scaler_file_path} to force retraining")
+    
     Thread(target=update_data_periodically).start()
     print(f"[{datetime.now()}] Starting Flask server...")
     app.run(host="0.0.0.0", port=8000)
