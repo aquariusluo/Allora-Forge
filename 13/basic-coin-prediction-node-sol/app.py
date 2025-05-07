@@ -25,14 +25,18 @@ cached_raw_data = None
 cached_preprocessed_data = None
 
 def parse_interval(interval):
-    unit = interval[-1]
-    value = int(interval[:-1])
-    if unit == 'm':
-        return value * 60
-    elif unit == 'h':
-        return value * 3600
-    else:
-        return value
+    try:
+        unit = interval[-1]
+        value = int(interval[:-1])
+        if unit == 'm':
+            return value * 60
+        elif unit == 'h':
+            return value * 3600
+        else:
+            return value
+    except Exception as e:
+        print(f"[{datetime.now()}] Error parsing interval {interval}: {str(e)}")
+        return 180  # Default to 3 minutes
 
 def fetch_solana_onchain_data():
     try:
@@ -69,45 +73,23 @@ def fetch_binance_order_book(pair, region):
         print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
         return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
 
-def fetch_sentiment_data():
-    try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
-        return {'sentiment_score': 0.0}
-
 def calculate_rsi(data, periods=3):
-    delta = data.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_bollinger_bands(data, window=5, num_std=2):
-    rolling_mean = data.rolling(window=window).mean()
-    rolling_std = data.rolling(window=window).std()
-    upper_band = rolling_mean + (rolling_std * num_std)
-    lower_band = rolling_mean - (rolling_std * num_std)
-    return upper_band, lower_band
-
-def calculate_volatility(data, window=2):
-    return data.pct_change().rolling(window=window).std()
+    try:
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_ma(data, window=2):
-    return data.rolling(window=window).mean()
-
-def calculate_macd(data, fast=4, slow=8, signal=3):
-    exp1 = data.ewm(span=fast, adjust=False).mean()
-    exp2 = data.ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd - signal_line
-
-def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
-    return data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
+    try:
+        return data.rolling(window=window).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def update_data_periodically():
     global cached_data, last_data_update, cached_raw_data, cached_preprocessed_data
@@ -182,28 +164,15 @@ def fetch_and_preprocess_data():
         print(f"[{datetime.now()}] After resampling rows: {len(df)}")
 
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-            for metric in ["open", "high", "low", "close"]:
-                for lag in range(1, 4):
+            for metric in ["close"]:
+                for lag in range(1, 3):
                     df[f"{metric}_{pair}_lag{lag}"] = df[f"{metric}_{pair}"].shift(lag)
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
-            df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=2)
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
-            df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"], fast=4, slow=8, signal=3)
-            df[f"volume_{pair}"] = df[f"volume_{pair}"].shift(1)
-            df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
-            order_book = fetch_binance_order_book(pair, REGION)
-            df[f"bid_ask_ratio_{pair}"] = order_book['bid_ask_ratio']
-            df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
-
-        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
-        print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(df)}")
 
         df["hour_of_day"] = df.index.hour
         onchain_data = fetch_solana_onchain_data()
         df["sol_tx_volume"] = onchain_data['tx_volume']
-
-        sentiment_data = fetch_sentiment_data()
-        df["sentiment_score"] = sentiment_data['sentiment_score']
 
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
         print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
@@ -213,7 +182,8 @@ def fetch_and_preprocess_data():
         return df
     except Exception as e:
         print(f"[{datetime.now()}] Error preprocessing data: {str(e)}")
-        return cached_preprocessed_data if cached_preprocessed_data is not None else pd.DataFrame()
+        cached_preprocessed_data = None
+        return pd.DataFrame()
 
 def update_data():
     global model_metrics, cached_features
@@ -222,7 +192,9 @@ def update_data():
     price_data_file = os.path.join(os.getcwd(), "data", "price_data.csv")
     model_file = model_file_path
     scaler_file = scaler_file_path
-    for path in [data_dir, price_data_file, model_file, scaler_file]:
+
+    # Only clear price data, not model files
+    for path in [data_dir, price_data_file]:
         if os.path.exists(path):
             if os.path.isdir(path):
                 for f in os.listdir(path):
@@ -240,11 +212,18 @@ def update_data():
         files_eth = download_data("ETH", TRAINING_DAYS, REGION, DATA_PROVIDER)
         if not files_btc or not files_sol or not files_eth:
             print(f"[{datetime.now()}] Warning: No data files downloaded for one or more pairs.")
+            return
         print(f"[{datetime.now()}] Files downloaded - BTC: {len(files_btc)}, SOL: {len(files_sol)}, ETH: {len(files_eth)}")
         print(f"[{datetime.now()}] Formatting data...")
-        format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+        df = format_data(files_btc, files_sol, files_eth, DATA_PROVIDER)
+        if df.empty:
+            print(f"[{datetime.now()}] Error: Data formatting returned empty DataFrame")
+            return
         print(f"[{datetime.now()}] Training model...")
         model, scaler, metrics, features = train_model(TIMEFRAME)
+        if model is None:
+            print(f"[{datetime.now()}] Error: Training failed, model is None")
+            return
         model_metrics = metrics
         cached_features = features
         print(f"[{datetime.now()}] Data update and training completed.")
@@ -259,10 +238,14 @@ def generate_inference(token):
             error_msg = "Token is required" if not token else f"Token {token} not supported, expected {TOKEN}"
             return Response(error_msg, status=400, mimetype='text/plain')
         if not os.path.exists(model_file_path):
-            raise FileNotFoundError("Model file not found.")
-        if cached_features is None or cached_data is None or (time.time() - last_data_update) > parse_interval(UPDATE_INTERVAL):
+            print(f"[{datetime.now()}] Model file {model_file_path} not found, attempting to update data...")
             update_data()
+            if not os.path.exists(model_file_path):
+                return Response("Model file not found after update", status=500, mimetype='text/plain')
+        if cached_features is None or cached_data is None or (time.time() - last_data_update) > parse_interval(UPDATE_INTERVAL):
             cached_data = fetch_and_preprocess_data()
+            if cached_data.empty:
+                return Response("Failed to preprocess data", status=500, mimetype='text/plain')
         
         inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
         
@@ -285,8 +268,8 @@ def generate_inference(token):
         print(metrics_log)
         
         def check_actual_price():
-            time.sleep(8 * 3600)
             try:
+                time.sleep(8 * 3600)
                 ticker_url = f'https://api.binance.{REGION}/api/v3/ticker/price?symbol=SOLUSDT'
                 response = requests.get(ticker_url, timeout=2)
                 response.raise_for_status()
@@ -311,6 +294,7 @@ def generate_inference(token):
         
         return Response(f"{inference:.16f}", status=200, mimetype='text/plain')
     except requests.exceptions.Timeout:
+        print(f"[{datetime.now()}] Inference timed out")
         return Response("Request timed out", status=504, mimetype='text/plain')
     except Exception as e:
         print(f"[{datetime.now()}] Inference error: {str(e)}")
