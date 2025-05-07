@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import requests
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, make_scorer
 from sklearn.feature_selection import SelectKBest, mutual_info_regression
 from scipy.stats import pearsonr, binomtest
@@ -20,8 +20,8 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v30"
-TRAINING_DAYS = 180
+MODEL_VERSION = "2025-05-07-optimized-v31"
+TRAINING_DAYS = 360
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -43,7 +43,6 @@ def download_data(token, training_days, region, data_provider):
         raise ValueError("Unsupported data provider")
 
 def fetch_solana_onchain_data():
-    """Fetch Solana on-chain transaction volume using Solana JSON-RPC."""
     try:
         url = "https://api.mainnet-beta.solana.com"
         headers = {"Content-Type": "application/json"}
@@ -63,7 +62,6 @@ def fetch_solana_onchain_data():
         return {'tx_volume': 0}
 
 def fetch_binance_order_book(pair, region):
-    """Fetch order book depth from Binance API."""
     try:
         url = f"https://api.binance.{region}/api/v3/depth?symbol={pair}&limit=10"
         response = requests.get(url, timeout=5)
@@ -80,7 +78,6 @@ def fetch_binance_order_book(pair, region):
         return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
 
 def fetch_sentiment_data():
-    """Fetch basic sentiment data (placeholder)."""
     try:
         positive_keywords = ["bullish", "buy", "up", "solana moon"]
         negative_keywords = ["bearish", "sell", "down", "crash"]
@@ -118,7 +115,6 @@ def calculate_macd(data, fast=4, slow=8, signal=3):
     return macd - signal_line
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
-    """Calculate rolling correlation between two assets."""
     return data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
@@ -237,8 +233,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         price_df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
     price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
-    price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
-    print(f"[{datetime.now()}] After adding cross-asset correlations rows: {len(price_df)}")
+    print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(price_df)}")
 
     price_df["hour_of_day"] = price_df.index.hour
 
@@ -251,6 +246,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
     price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
     price_df = price_df.dropna(subset=["target_SOLUSDT"])
     print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
+    print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
 
     if len(price_df) == 0:
         print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
@@ -275,7 +271,7 @@ def load_frame(file_path, timeframe):
         f"{feature}_{pair}"
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
         for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower", "bid_ask_ratio", "order_book_imbalance"]
-    ] + ["hour_of_day", "sol_tx_volume", "sentiment_score", "sol_btc_corr", "sol_eth_corr"]
+    ] + ["hour_of_day", "sol_tx_volume", "sentiment_score", "sol_btc_corr"]
 
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -286,14 +282,16 @@ def load_frame(file_path, timeframe):
     selector = SelectKBest(score_func=mutual_info_regression, k=min(50, len(features)))
     X_selected = selector.fit_transform(X, y)
     selected_features = [features[i] for i in selector.get_support(indices=True)]
+    X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
 
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_selected)
+    X_scaled = scaler.fit_transform(X_selected_df)
+    X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
     split_idx = int(len(X) * 0.8)
     if split_idx == 0:
         raise ValueError("Not enough data to split into training and test sets")
-    X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+    X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
     return X_train, X_test, y_train, y_test, scaler, selected_features
@@ -306,14 +304,15 @@ def weighted_mztae(y_true, y_pred, weights):
     return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
 
 def custom_directional_loss(y_true, y_pred):
-    """Custom loss function to prioritize directional accuracy."""
     mse = mean_squared_error(y_true, y_pred)
     directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
     return mse + 1.0 * directional_error
 
 def train_model(timeframe, file_path=training_price_data_path):
     X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
+    print(f"[{datetime.now()}] Training features: {features}")
 
+    # Regression model
     if MODEL == "XGBoost":
         n_splits = min(5, max(2, len(X_train) - 1))
         tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -336,38 +335,57 @@ def train_model(timeframe, file_path=training_price_data_path):
             verbose=2
         )
         grid_search.fit(X_train, y_train)
-        model = grid_search.best_estimator_
+        model_reg = grid_search.best_estimator_
     elif MODEL == "LightGBM":
-        model = lgb.LGBMRegressor(
+        model_reg = lgb.LGBMRegressor(
             objective='regression',
             learning_rate=0.01,
             max_depth=5,
             n_estimators=200,
             subsample=0.8,
             colsample_bytree=0.8,
-            num_leaves=10,
-            min_child_samples=100
+            num_leaves=8,
+            min_child_samples=200
         )
-        model.fit(X_train, y_train, feature_name=features)
+        model_reg.fit(X_train, y_train, feature_name=features)
     else:
         raise ValueError(f"Unsupported model: {MODEL}")
 
-    pred_train = model.predict(X_train)
-    pred_test = model.predict(X_test)
+    # Classification model for directional accuracy
+    y_train_sign = np.sign(y_train)
+    model_clf = lgb.LGBMClassifier(
+        objective='binary',
+        learning_rate=0.01,
+        max_depth=5,
+        n_estimators=100,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        num_leaves=8,
+        min_child_samples=200
+    )
+    model_clf.fit(X_train, y_train_sign, feature_name=features)
+
+    pred_train = model_reg.predict(X_train)
+    pred_test = model_reg.predict(X_test)
+    pred_train_sign = model_clf.predict(X_train)
+    pred_test_sign = model_clf.predict(X_test)
+
+    # Combine regression and classification predictions
+    pred_test_adjusted = pred_test * pred_test_sign
 
     weights = np.abs(y_test)
     train_mae = mean_absolute_error(y_train, pred_train)
-    test_mae = mean_absolute_error(y_test, pred_test)
+    test_mae = mean_absolute_error(y_test, pred_test_adjusted)
     train_rmse = np.sqrt(mean_squared_error(y_train, pred_train))
-    test_rmse = np.sqrt(mean_squared_error(y_test, pred_test))
+    test_rmse = np.sqrt(mean_squared_error(y_test, pred_test_adjusted))
     train_r2 = r2_score(y_train, pred_train)
-    test_r2 = r2_score(y_test, pred_test)
+    test_r2 = r2_score(y_test, pred_test_adjusted)
     train_weighted_rmse = weighted_rmse(y_train, pred_train, np.abs(y_train))
-    test_weighted_rmse = weighted_rmse(y_test, pred_test, weights)
+    test_weighted_rmse = weighted_rmse(y_test, pred_test_adjusted, weights)
     train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
-    test_mztae = weighted_mztae(y_test, pred_test, weights)
-    directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
-    correlation, p_value = pearsonr(y_test, pred_test)
+    test_mztae = weighted_mztae(y_test, pred_test_adjusted, weights)
+    directional_accuracy = np.mean(np.sign(pred_test_adjusted) == np.sign(y_test))
+    correlation, p_value = pearsonr(y_test, pred_test_adjusted)
 
     n_successes = int(directional_accuracy * len(y_test))
     binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
@@ -379,10 +397,11 @@ def train_model(timeframe, file_path=training_price_data_path):
     print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
     print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
     print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
+    print(f"[{datetime.now()}] Feature importances: {list(zip(features, model_reg.feature_importances_))}")
 
     os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
     with open(model_file_path, "wb") as f:
-        pickle.dump(model, f)
+        pickle.dump({'reg': model_reg, 'clf': model_clf}, f)
     with open(scaler_file_path, "wb") as f:
         pickle.dump(scaler, f)
 
@@ -403,11 +422,13 @@ def train_model(timeframe, file_path=training_price_data_path):
         'binom_p_value': binom_p_value
     }
 
-    return model, scaler, metrics, features
+    return {'reg': model_reg, 'clf': model_clf}, scaler, metrics, features
 
 def get_inference(token, timeframe, region, data_provider, features, cached_data=None):
     with open(model_file_path, "rb") as f:
-        model = pickle.load(f)
+        models = pickle.load(f)
+    model_reg = models['reg']
+    model_clf = models['clf']
 
     df = cached_data
     if df is None:
@@ -473,7 +494,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             df[f"order_book_imbalance_{pair}"] = order_book['order_book_imbalance']
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
-        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
+        print(f"[{datetime.now()}] After adding cross-asset correlation rows: {len(df)}")
 
         df["hour_of_day"] = df.index.hour
 
@@ -485,6 +506,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
         print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
+        print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
 
     missing_cols = [col for col in features if col not in df.columns]
     if missing_cols:
@@ -500,7 +522,8 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
     X_scaled_df = pd.DataFrame(X_scaled, columns=features, index=X.index)
 
     last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
-    pred = model.predict(last_row)
+    pred_reg = model_reg.predict(last_row)
+    pred_clf = model_clf.predict(last_row)
 
     ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
     try:
@@ -511,7 +534,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
         return 0.0
 
-    log_return_pred = pred[0]
+    log_return_pred = pred_reg[0] * pred_clf[0]
     predicted_price = latest_price * np.exp(log_return_pred)
     print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Log Return: {log_return_pred:.6f}")
     print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
