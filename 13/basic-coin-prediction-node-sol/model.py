@@ -21,7 +21,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-08-optimized-v39"
+MODEL_VERSION = "2025-05-08-optimized-v40"
 TRAINING_DAYS = 720
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
@@ -509,6 +509,7 @@ def train_model(timeframe, file_path=training_price_data_path):
             'baseline_mztae': baseline_mztae
         }
 
+        print(f"[{datetime.now()}] Metrics computed: {metrics}")
         return model_dict, scaler, metrics, features
 
     except Exception as e:
@@ -564,7 +565,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
             df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
             df_sol['date'] = pd.to_datetime(df_sol['date'], utc=True)
-            df_eth['date'] = pd.to-(df_eth['date'], utc=True)
+            df_eth['date'] = pd.to_datetime(df_eth['date'], utc=True)
             df_btc = df_btc.sort_values('date').drop_duplicates(subset="date", keep="last")
             df_sol = df_sol.sort_values('date').drop_duplicates(subset="date", keep="last")
             df_eth = df_eth.sort_values('date').drop_duplicates(subset="date", keep="last")
