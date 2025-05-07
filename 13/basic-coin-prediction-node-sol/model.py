@@ -410,7 +410,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
             df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"], fast=4, slow=8, signal=3)
             df[f"volume_{pair}"] = df[f"volume_{pair}"].shift(1)
-            df[f"försäljning_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
+            df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"close_{pair}"], window=5)
 
         df["hour_of_day"] = df.index.hour
 
