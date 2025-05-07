@@ -1,4 +1,3 @@
-# optimized-v27
 import json
 import os
 import pickle
@@ -21,9 +20,9 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v27"
+MODEL_VERSION = "2025-05-07-optimized-v28"
 TRAINING_DAYS = 90
-print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (ETHUSDT, enhanced features, Solana RPC) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (ETHUSDT, sentiment features, Solana RPC) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
     files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
@@ -44,8 +43,9 @@ def download_data(token, training_days, region, data_provider):
         raise ValueError("Unsupported data provider")
 
 def fetch_solana_onchain_data():
-    """Fetch Solana on-chain data using Solana JSON-RPC."""
+    """Fetch Solana on-chain data using Solana JSON-RPC and blockchain explorer."""
     try:
+        # Fetch transaction volume via Solana RPC
         url = "https://api.mainnet-beta.solana.com"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -58,9 +58,15 @@ def fetch_solana_onchain_data():
         response.raise_for_status()
         data = response.json()
         tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
+
+        # Fetch active addresses (placeholder via Solana explorer API)
+        explorer_url = "https://explorer.solana.com/stats/api/active_addresses"
+        explorer_response = requests.get(explorer_url, timeout=5)
+        active_addresses = explorer_response.json().get("active_addresses", 0) if explorer_response.status_code == 200 else 0
+
         return {
             'tx_volume': tx_volume,
-            'active_addresses': 0  # Placeholder; Solana RPC doesn't provide this directly
+            'active_addresses': active_addresses
         }
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
@@ -82,6 +88,20 @@ def fetch_binance_order_book(pair, region):
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching Binance order book for {pair}: {str(e)}")
         return {'bid_ask_ratio': 1.0, 'order_book_imbalance': 0.0}
+
+def fetch_sentiment_data():
+    """Fetch basic sentiment data from X posts (placeholder implementation)."""
+    try:
+        # Placeholder: Replace with actual X API call when available
+        positive_keywords = ["bullish", "buy", "up", "solana moon"]
+        negative_keywords = ["bearish", "sell", "down", "crash"]
+        sentiment_score = 0.0
+        # Simulate sentiment analysis
+        sentiment_score += 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        return {'sentiment_score': sentiment_score}
+    except Exception as e:
+        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
+        return {'sentiment_score': 0.0}
 
 def calculate_rsi(data, periods=3):
     delta = data.diff()
@@ -195,15 +215,13 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
     price_df = pd.concat([price_df_btc, price_df_sol, price_df_eth], axis=1)
 
     if TIMEFRAME != "1m":
-        price_df = price_df.resample(TIMEFRAME).agg({
+        price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
             f"{metric}_{pair}": "last"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
             for metric in ["open", "high", "low", "close", "volume"]
         })
 
-    price_df.interpolate(method='linear', inplace=True)
-    price_df.ffill(inplace=True)
-    price_df.bfill(inplace=True)
+    price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
     for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
         price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
@@ -226,6 +244,9 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
     price_df["sol_tx_volume"] = onchain_data['tx_volume']
     price_df["sol_active_addresses"] = onchain_data['active_addresses']
 
+    sentiment_data = fetch_sentiment_data()
+    price_df["sentiment_score"] = sentiment_data['sentiment_score']
+
     price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
     price_df = price_df.dropna()
 
@@ -241,9 +262,7 @@ def load_frame(file_path, timeframe):
         raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
     
     df = pd.read_csv(file_path, index_col='date', parse_dates=True)
-    df.interpolate(method='linear', inplace=True)
-    df.ffill(inplace=True)
-    df.bfill(inplace=True)
+    df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
     features = [
         f"{metric}_{pair}_lag{lag}"
@@ -254,7 +273,7 @@ def load_frame(file_path, timeframe):
         f"{feature}_{pair}"
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
         for feature in ["rsi", "volatility", "ma3", "macd", "volume", "bb_upper", "bb_lower", "bid_ask_ratio", "order_book_imbalance"]
-    ] + ["hour_of_day", "sol_tx_volume", "sol_active_addresses"]
+    ] + ["hour_of_day", "sol_tx_volume", "sol_active_addresses", "sentiment_score"]
 
     X = df[features]
     y = df["target_SOLUSDT"]
@@ -284,17 +303,23 @@ def weighted_mztae(y_true, y_pred, weights):
     ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
     return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
 
+def custom_directional_loss(y_true, y_pred):
+    """Custom loss function to prioritize directional accuracy."""
+    mse = mean_squared_error(y_true, y_pred)
+    directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
+    return mse + 0.5 * directional_error
+
 def train_model(timeframe, file_path=training_price_data_path):
     X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
 
     n_splits = min(5, max(2, len(X_train) - 1))
     tscv = TimeSeriesSplit(n_splits=n_splits)
     param_grid = {
-        'learning_rate': [0.005, 0.01, 0.03, 0.1],
+        'learning_rate': [0.005, 0.01, 0.03],
         'max_depth': [3, 5, 7],
         'n_estimators': [100, 200, 300],
-        'subsample': [0.6, 0.8, 1.0],
-        'colsample_bytree': [0.6, 0.8, 1.0],
+        'subsample': [0.7, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.9, 1.0],
         'alpha': [0, 5],
         'lambda': [1, 3]
     }
@@ -303,7 +328,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         estimator=xgb_model,
         param_grid=param_grid,
         cv=tscv,
-        scoring=make_scorer(mean_absolute_error, greater_is_better=False),
+        scoring=make_scorer(custom_directional_loss, greater_is_better=False),
         n_jobs=-1,
         verbose=2
     )
@@ -318,14 +343,14 @@ def train_model(timeframe, file_path=training_price_data_path):
         subsample=0.8,
         colsample_bytree=0.8,
         num_leaves=20,
-        min_data_in_leaf=50
+        min_child_samples=50
     )
     lgb_model.fit(X_train, y_train, feature_name=features)
 
     xgb_pred_train = xgb_model.predict(X_train)
     lgb_pred_train = lgb_model.predict(X_train)
     meta_X_train = np.column_stack((xgb_pred_train, lgb_pred_train))
-    meta_model = lgb.LGBMRegressor(n_estimators=50, learning_rate=0.01, min_data_in_leaf=20)
+    meta_model = lgb.LGBMRegressor(n_estimators=50, learning_rate=0.01, min_child_samples=20)
     meta_model.fit(meta_X_train, y_train)
 
     xgb_pred_test = xgb_model.predict(X_test)
@@ -393,7 +418,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
     df = cached_data
     if df is None:
         if data_provider == "coingecko":
-            df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
+            df_btc = download_coingecke_current_day_data("BTC", CG_API_KEY)
             df_sol = download_coingecko_current_day_data("SOL", CG_API_KEY)
             df_eth = download_coingecko_current_day_data("ETH", CG_API_KEY)
         else:
@@ -423,12 +448,10 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df_eth = df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
 
-        df.interpolate(method='linear', inplace=True)
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
+        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         if TIMEFRAME != "1m":
-            df = df.resample(TIMEFRAME).agg({
+            df = df.resample(TIMEFRAME, closed='right', label='right').agg({
                 f"{metric}_{pair}": "last"
                 for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
                 for metric in ["open", "high", "low", "close", "volume"]
@@ -454,7 +477,10 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df["sol_tx_volume"] = onchain_data['tx_volume']
         df["sol_active_addresses"] = onchain_data['active_addresses']
 
-        df = df.interpolate(method='linear').ffill().bfill().dropna()
+        sentiment_data = fetch_sentiment_data()
+        df["sentiment_score"] = sentiment_data['sentiment_score']
+
+        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
 
     missing_cols = [col for col in features if col not in df.columns]
     if missing_cols:
