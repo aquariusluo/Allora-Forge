@@ -21,7 +21,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v36"
+MODEL_VERSION = "2025-05-07-optimized-v37"
 TRAINING_DAYS = 720
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
@@ -449,8 +449,9 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model_reg.feature_importances_)), key=lambda x: x[1], reverse=True)}")
 
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
+        model_dict = {'reg': model_reg, 'clf': model_clf, 'version': MODEL_VERSION}
         with open(model_file_path, "wb") as f:
-            pickle.dump({'reg': model_reg, 'clf': model_clf}, f)
+            pickle.dump(model_dict, f)
         with open(scaler_file_path, "wb") as f:
             pickle.dump(scaler, f)
         print(f"[{datetime.now()}] Model saved to {model_file_path}, scaler saved to {scaler_file_path}")
@@ -474,7 +475,7 @@ def train_model(timeframe, file_path=training_price_data_path):
             'baseline_mztae': baseline_mztae
         }
 
-        return {'reg': model_reg, 'clf': model_clf}, scaler, metrics, features
+        return model_dict, scaler, metrics, features
 
     except Exception as e:
         print(f"[{datetime.now()}] Error in train_model: {str(e)}")
@@ -487,6 +488,15 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             return 0.0
         with open(model_file_path, "rb") as f:
             models = pickle.load(f)
+
+        # Validate model structure
+        if not isinstance(models, dict) or 'reg' not in models or 'clf' not in models:
+            print(f"[{datetime.now()}] Error: Invalid model structure in {model_file_path}. Expected dictionary with 'reg' and 'clf' keys.")
+            return 0.0
+        if models.get('version', '') != MODEL_VERSION:
+            print(f"[{datetime.now()}] Warning: Model version mismatch. Expected {MODEL_VERSION}, found {models.get('version', 'unknown')}")
+            return 0.0
+
         model_reg = models['reg']
         model_clf = models['clf']
 
