@@ -85,6 +85,7 @@ def fetch_batch(pair, region, end_time, limit):
         df = pd.DataFrame(json.loads(resp), columns=columns)
         df['date'] = [pd.to_datetime(x+1, unit='ms', utc=True) for x in df['end_time']]
         df[["volume", "taker_volume", "open", "high", "low", "close"]] = df[["volume", "taker_volume", "open", "high", "low", "close"]].apply(pd.to_numeric)
+        print(f"[{datetime.now()}] Fetched {len(df)} rows for {pair} batch")
         return df
     except Exception as e:
         print(f"Error fetching {pair} data batch: {str(e)}")
@@ -92,7 +93,7 @@ def fetch_batch(pair, region, end_time, limit):
 
 def download_binance_current_day_data(pair, region):
     limit = 1000
-    total_minutes = 10080  # 7 days
+    total_minutes = 20160  # 14 days
     requests_needed = (total_minutes + limit - 1) // limit
     dfs = []
     end_time = int(time.time() * 1000)
