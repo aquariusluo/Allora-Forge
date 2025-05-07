@@ -21,27 +21,33 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v37"
+MODEL_VERSION = "2025-05-07-optimized-v38"
 TRAINING_DAYS = 720
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
-def download_data_binance(token, training_days, region):
-    try:
-        files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
-        print(f"[{datetime.now()}] Downloaded {len(files)} new files for {token}USDT")
-        return files
-    except Exception as e:
-        print(f"[{datetime.now()}] Error downloading Binance data for {token}: {str(e)}")
-        return []
+def download_data_binance(token, training_days, region, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            files = download_binance_daily_data(f"{token}USDT", training_days, region, binance_data_path)
+            print(f"[{datetime.now()}] Downloaded {len(files)} new files for {token}USDT")
+            return files
+        except Exception as e:
+            print(f"[{datetime.now()}] Error downloading Binance data for {token} (attempt {attempt+1}/{retries}): {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    return []
 
-def download_data_coingecko(token, training_days):
-    try:
-        files = download_coingecko_data(token, training_days, coingecko_data_path, CG_API_KEY)
-        print(f"[{datetime.now()}] Downloaded {len(files)} new files")
-        return files
-    except Exception as e:
-        print(f"[{datetime.now()}] Error downloading CoinGecko data for {token}: {str(e)}")
-        return []
+def download_data_coingecko(token, training_days, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            files = download_coingecko_data(token, training_days, coingecko_data_path, CG_API_KEY)
+            print(f"[{datetime.now()}] Downloaded {len(files)} new files")
+            return files
+        except Exception as e:
+            print(f"[{datetime.now()}] Error downloading CoinGecko data for {token} (attempt {attempt+1}/{retries}): {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)
+    return []
 
 def download_data(token, training_days, region, data_provider):
     try:
@@ -266,6 +272,7 @@ def load_frame(file_path, timeframe):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
         
+        print(f"[{datetime.now()}] Loading data from {file_path}...")
         df = pd.read_csv(file_path, index_col='date', parse_dates=True)
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
@@ -287,21 +294,23 @@ def load_frame(file_path, timeframe):
         X = df[features]
         y = df["target_SOLUSDT"]
 
-        if len(X) == 0:
-            print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
+        if len(X) < 10:
+            print(f"[{datetime.now()}] Error: Insufficient samples ({len(X)}) for training")
             return None, None, None, None, None, None
 
+        print(f"[{datetime.now()}] Selecting features with SelectKBest...")
         selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
         X_selected = selector.fit_transform(X, y)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
 
+        print(f"[{datetime.now()}] Scaling features...")
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_selected_df)
         X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
-        if split_idx == 0:
+        if split_idx < 5:
             print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets")
             return None, None, None, None, None, None
         X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
@@ -340,6 +349,7 @@ def custom_directional_loss(y_true, y_pred):
 
 def train_model(timeframe, file_path=training_price_data_path):
     try:
+        print(f"[{datetime.now()}] Starting model training...")
         X_train, X_test, y_train, y_test, scaler, features = load_frame(file_path, timeframe)
         if X_train is None:
             print(f"[{datetime.now()}] Error: Failed to load frame, cannot train model")
@@ -348,6 +358,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training features: {features}")
 
         # Baseline: Linear Regression
+        print(f"[{datetime.now()}] Training baseline linear regression model...")
         baseline_model = LinearRegression()
         baseline_model.fit(X_train, y_train)
         baseline_pred = baseline_model.predict(X_test)
@@ -356,6 +367,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
 
         if MODEL == "XGBoost":
+            print(f"[{datetime.now()}] Training XGBoost model...")
             n_splits = min(5, max(2, len(X_train) - 1))
             tscv = TimeSeriesSplit(n_splits=n_splits)
             param_grid = {
@@ -379,6 +391,7 @@ def train_model(timeframe, file_path=training_price_data_path):
             grid_search.fit(X_train, y_train)
             model_reg = grid_search.best_estimator_
         elif MODEL == "LightGBM":
+            print(f"[{datetime.now()}] Training LightGBM regression model...")
             model_reg = lgb.LGBMRegressor(
                 objective='regression',
                 learning_rate=0.01,
@@ -394,12 +407,13 @@ def train_model(timeframe, file_path=training_price_data_path):
             raise ValueError(f"Unsupported model: {MODEL}")
 
         # Classification model for directional accuracy
+        print(f"[{datetime.now()}] Training LightGBM classification model...")
         y_train_sign = np.sign(y_train)
         model_clf = lgb.LGBMClassifier(
             objective='binary',
             learning_rate=0.01,
             max_depth=5,
-            n_estimators=100,
+            n_estimators=200,  # Increased for better directional accuracy
             subsample=0.8,
             colsample_bytree=0.8,
             num_leaves=8,
@@ -407,6 +421,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         )
         model_clf.fit(X_train, y_train_sign, feature_name=features)
 
+        print(f"[{datetime.now()}] Generating predictions...")
         pred_train = model_reg.predict(X_train)
         pred_test = model_reg.predict(X_test)
         pred_train_sign = model_clf.predict(X_train)
@@ -420,6 +435,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         if pred_test_std < 1e-10:
             print(f"[{datetime.now()}] Warning: Constant predictions detected (std: {pred_test_std:.6e}), model may be underfitting")
 
+        print(f"[{datetime.now()}] Computing metrics...")
         weights = np.abs(y_test)
         train_mae = mean_absolute_error(y_train, pred_train)
         test_mae = mean_absolute_error(y_test, pred_test_adjusted)
@@ -448,6 +464,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
         print(f"[{datetime.now()}] Feature importances: {sorted(list(zip(features, model_reg.feature_importances_)), key=lambda x: x[1], reverse=True)}")
 
+        print(f"[{datetime.now()}] Saving model...")
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
         model_dict = {'reg': model_reg, 'clf': model_clf, 'version': MODEL_VERSION}
         with open(model_file_path, "wb") as f:
@@ -479,7 +496,21 @@ def train_model(timeframe, file_path=training_price_data_path):
 
     except Exception as e:
         print(f"[{datetime.now()}] Error in train_model: {str(e)}")
-        return None, None, {}, []
+        # Fallback: Save a simple linear regression model
+        try:
+            print(f"[{datetime.now()}] Attempting to save fallback linear regression model...")
+            fallback_model = LinearRegression()
+            fallback_model.fit(X_train, y_train)
+            model_dict = {'reg': fallback_model, 'clf': None, 'version': MODEL_VERSION}
+            with open(model_file_path, "wb") as f:
+                pickle.dump(model_dict, f)
+            with open(scaler_file_path, "wb") as f:
+                pickle.dump(scaler, f)
+            print(f"[{datetime.now()}] Fallback model saved to {model_file_path}")
+            return model_dict, scaler, {}, features
+        except Exception as fallback_e:
+            print(f"[{datetime.now()}] Error saving fallback model: {str(fallback_e)}")
+            return None, None, {}, []
 
 def get_inference(token, timeframe, region, data_provider, features, cached_data=None):
     try:
@@ -490,15 +521,18 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             models = pickle.load(f)
 
         # Validate model structure
-        if not isinstance(models, dict) or 'reg' not in models or 'clf' not in models:
-            print(f"[{datetime.now()}] Error: Invalid model structure in {model_file_path}. Expected dictionary with 'reg' and 'clf' keys.")
+        if not isinstance(models, dict):
+            print(f"[{datetime.now()}] Error: Invalid model structure in {model_file_path}. Expected dictionary, found {type(models)}")
+            return 0.0
+        if 'reg' not in models:
+            print(f"[{datetime.now()}] Error: Missing 'reg' key in model dictionary")
             return 0.0
         if models.get('version', '') != MODEL_VERSION:
             print(f"[{datetime.now()}] Warning: Model version mismatch. Expected {MODEL_VERSION}, found {models.get('version', 'unknown')}")
             return 0.0
 
         model_reg = models['reg']
-        model_clf = models['clf']
+        model_clf = models.get('clf')  # May be None for fallback model
 
         df = cached_data
         if df is None:
@@ -589,7 +623,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
         last_row = X_scaled_df.reindex(columns=features).iloc[-1:]
         pred_reg = model_reg.predict(last_row)
-        pred_clf = model_clf.predict(last_row)
+        pred_clf = model_clf.predict(last_row) if model_clf is not None else [1]  # Default to positive direction if no classifier
 
         ticker_url = f'https://api.binance.{region}/api/v3/ticker/price?symbol=SOLUSDT'
         try:
