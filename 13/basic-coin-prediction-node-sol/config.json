@@ -4,7 +4,7 @@
       "keyringBackend": "test",
       "keyringPassphrase": "",
       "addressKeyName": "testkey",
-      "addressRestoreMnemonic": "charge detect length school habit artwork acid panther bench toy blanket muscle square praise concert price save essay discover between ice twice viable birth",
+      "addressRestoreMnemonic": "hunt spare prison able label clean fragile dwarf unfold shaft mesh harvest retire step slim able salute measure science pepper size save all clarify",
       "alloraHomeDir": "",
       "gasPrices": "auto",
       "gasPriceUpdateInterval": 5,
@@ -29,7 +29,7 @@
     },
     "worker": [
       {
-        "topicId": 57,
+        "topicId": 58,
         "inferenceEntrypointName": "apiAdapter",
         "parameters": {
           "InferenceEndpoint": "http://inference:8000/inference/{Token}",
