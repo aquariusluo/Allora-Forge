@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v36"
+MODEL_VERSION = "2025-05-13-optimized-v37"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -241,6 +241,9 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                     q_low, q_high = price_df[f"{metric}_{pair}"].quantile([0.01, 0.99])
                     price_df[f"{metric}_{pair}"] = price_df[f"{metric}_{pair}"].clip(q_low, q_high)
 
+        # Ensure numeric dtypes before resampling
+        price_df = price_df.astype({col: 'float64' for col in price_df.columns if col not in ['date']})
+
         if TIMEFRAME != "1m":
             price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
                 f"{metric}_{pair}": "last"
@@ -249,7 +252,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             })
         print(f"[{datetime.now()}] After resampling rows: {len(price_df)}")
 
-        price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+        price_df = price_df.interpolate(method='linear').ffill().bfill()
 
         # Feature generation with logarithmic transformations
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
@@ -305,7 +308,7 @@ def load_frame(file_path, timeframe):
             raise FileNotFoundError(f"[{datetime.now()}] Training data file {file_path} does not exist.")
         
         df = pd.read_csv(file_path, index_col='date', parse_dates=True)
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+        df = df.interpolate(method='linear').ffill().bfill()
 
         features = [
             f"log_close_{pair}_lag{lag}"
@@ -325,8 +328,8 @@ def load_frame(file_path, timeframe):
         X = df[features]
         y = df["target_SOLUSDT"]
 
-        if len(X) == 0:
-            print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
+        if len(X) < 10:
+            print(f"[{datetime.now()}] Error: Too few samples ({len(X)}) available for scaling in load_frame")
             return None, None, None, None, None, None
 
         selector = SelectKBest(score_func=mutual_info_regression, k=min(25, len(features)))
@@ -339,8 +342,8 @@ def load_frame(file_path, timeframe):
         X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
-        if split_idx == 0:
-            print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets")
+        if split_idx < 5:
+            print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets (split_idx={split_idx})")
             return None, None, None, None, None, None
         X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
@@ -394,24 +397,26 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
 
-        # Optimized LightGBM with early stopping
+        # Relaxed LightGBM with simplified constraints
         model = lgb.LGBMRegressor(
             objective='regression',
-            learning_rate=0.005,
-            max_depth=4,
-            n_estimators=600,
-            subsample=0.7,
-            colsample_bytree=0.7,
-            num_leaves=6,
-            min_child_samples=50,
-            lambda_l1=1.0,
-            lambda_l2=1.0
+            learning_rate=0.01,
+            max_depth=6,
+            n_estimators=1000,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            num_leaves=15,
+            min_child_samples=20,
+            lambda_l1=0.5,
+            lambda_l2=0.5,
+            min_split_gain=0.0,
+            min_child_weight=0.001
         )
         model.fit(
             X_train, y_train,
             eval_set=[(X_test, y_test)],
             eval_metric='rmse',
-            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)],
+            callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True)],
             feature_name=features
         )
 
@@ -435,7 +440,12 @@ def train_model(timeframe, file_path=training_price_data_path):
         train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
         test_mztae = weighted_mztae(y_test, pred_test, weights)
         directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
-        correlation, p_value = pearsonr(y_test, pred_test)
+        
+        # Handle constant predictions in correlation
+        if np.std(pred_test) < 1e-10:
+            correlation, p_value = 0.0, 1.0
+        else:
+            correlation, p_value = pearsonr(y_test, pred_test)
 
         n_successes = int(directional_accuracy * len(y_test))
         binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
@@ -452,7 +462,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training MAE: {train_mae:.6f}, Test MAE: {test_mae:.6f}")
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
-        print(f"[{datetime.now()}] Weighted RMSE: {test_righted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
+        print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse:.2f}%")
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
@@ -543,7 +553,8 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                         q_low, q_high = df[f"{metric}_{pair}"].quantile([0.01, 0.99])
                         df[f"{metric}_{pair}"] = df[f"{metric}_{pair}"].clip(q_low, q_high)
 
-            df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+            df = df.astype({col: 'float64' for col in df.columns if col not in ['date']})
+            df = df.interpolate(method='linear').ffill().bfill()
 
             if TIMEFRAME != "1m":
                 df = df.resample(TIMEFRAME, closed='right', label='right').agg({
@@ -579,7 +590,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             for col in feature_columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
+            df = df.interpolate(method='linear').ffill().bfill().dropna()
             print(f"[{datetime.now()}] After NaN handling inference rows: {len(df)}")
             print(f"[{datetime.now()}] Inference features generated: {list(df.columns)}")
             print(f"[{datetime.now()}] Inference NaN counts: {df.isna().sum().to_dict()}")
