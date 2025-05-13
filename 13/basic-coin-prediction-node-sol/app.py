@@ -312,7 +312,7 @@ def generate_inference(token):
                 response_current = requests.get(ticker_url_current, timeout=2)
                 response_current.raise_for_status()
                 current_price = float(response_current.json()['price'])
-                actual_price_change = new_price - current_price
+                actual_price_change = (new_price - current_price) / current_price
                 recent_actuals.append(actual_price_change)
                 if len(recent_actuals) > 100:
                     recent_actuals.pop(0)
