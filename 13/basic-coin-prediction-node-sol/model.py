@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v41"
+MODEL_VERSION = "2025-05-13-optimized-v42"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -53,25 +53,6 @@ def download_data(token, training_days, region, data_provider):
         print(f"[{datetime.now()}] Error downloading data for {token}: {str(e)}")
         return []
 
-def fetch_solana_onchain_data():
-    try:
-        url = "https://api.mainnet-beta.solana.com"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getRecentPerformanceSamples",
-            "params": [1]
-        }
-        response = requests.post(url, headers=headers, json=payload, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
-        return {'tx_volume': tx_volume}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
-        return {'tx_volume': 0}
-
 def calculate_rsi(data, periods=14):
     try:
         delta = data.diff()
@@ -97,13 +78,6 @@ def calculate_ma(data, window=3):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_ema(data, span=12):
-    try:
-        return data.ewm(span=span, adjust=False).mean()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating EMA: {str(e)}")
-        return pd.Series(0, index=data.index)
-
 def calculate_macd(data, fast=12, slow=26, signal=9):
     try:
         exp1 = data.ewm(span=fast, adjust=False).mean()
@@ -115,27 +89,12 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
         print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_bollinger_bands(data, window=20, num_std=2):
+def calculate_volume_change(data, window=1):
     try:
-        rolling_mean = data.rolling(window=window).mean()
-        rolling_std = data.rolling(window=window).std()
-        upper_band = rolling_mean + (rolling_std * num_std)
-        lower_band = rolling_mean - (rolling_std * num_std)
-        return upper_band, lower_band
+        return data.pct_change(window).fillna(0)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
-        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
-
-def calculate_atr(high, low, close, periods=14):
-    try:
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        return tr.rolling(window=periods).mean()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating ATR: {str(e)}")
-        return pd.Series(0, index=close.index)
+        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -144,23 +103,6 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
         return pd.Series(0, index=data.index)
-
-def calculate_volume_change(data, window=1):
-    try:
-        return data.pct_change(window).fillna(0)
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
-        return pd.Series(0, index=data.index)
-
-def fetch_sentiment_data():
-    try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
-    except Exception as e:
-        print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
-        return {'sentiment_score': 0.0}
 
 def format_data(files_btc, files_sol, files_eth, data_provider):
     try:
@@ -271,10 +213,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
 
         price_df = price_df.interpolate(method='linear').ffill().bfill()
 
-        # Simplified feature generation
+        # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"close_{pair}"] = price_df[f"close_{pair}"]
-            price_df[f"pct_change_{pair}"] = price_df[f"close_{pair}"].pct_change().shift(-1)  # Target as percentage change
+            price_df[f"pct_change_{pair}"] = price_df[f"close_{pair}"].pct_change().shift(-1)
             for lag in [1, 2]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
@@ -355,13 +297,13 @@ def load_frame(file_path, timeframe):
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_selected_df)
-        X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
+        X_selected_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
         if split_idx < 100:
             print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets (split_idx={split_idx})")
             return None, None, None, None, None, None
-        X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
+        X_train, X_test = X_selected_df[:split_idx], X_selected_df[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
         print(f"[{datetime.now()}] Loaded frame: {len(X_train)} training samples, {len(X_test)} test samples, features: {selected_features}")
@@ -394,7 +336,7 @@ def custom_directional_loss(y_true, y_pred):
     try:
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-        return rmse + 1.5 * directional_error
+        return rmse + 2.0 * directional_error
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating custom directional loss: {str(e)}")
         return float('inf')
@@ -417,7 +359,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
         print(f"[{datetime.now()}] Baseline predictions (first 5): {baseline_pred[:5]}")
 
-        # Simplified grid search for LightGBM
+        # Grid search for LightGBM
         param_grid = {
             'learning_rate': [0.01, 0.05],
             'max_depth': [5, 7],
@@ -529,7 +471,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         return model, scaler, metrics, features
 
     except Exception as e:
-        print(f"[{datetime.now()}] Error in  train_model: {str(e)}")
+        print(f"[{datetime.now()}] Error in train_model: {str(e)}")
         return None, None, {}, []
 
 def get_inference(token, timeframe, region, data_provider, features, cached_data=None):
@@ -646,12 +588,12 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
             return 0.0
 
-        log_return_pred = pred[0]
-        predicted_price = latest_price * (1 + log_return_pred)  # Adjusted for pct_change target
-        print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Pct Change: {log_return_pred:.6f}")
+        pct_change_pred = pred[0]
+        predicted_price = latest_price * (1 + pct_change_pred)
+        print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Pct Change: {pct_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
-        return log_return_pred
+        return pct_change_pred
 
     except Exception as e:
         print(f"[{datetime.now()}] Error in get_inference: {str(e)}")
