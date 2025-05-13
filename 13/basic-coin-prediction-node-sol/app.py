@@ -9,6 +9,7 @@ from datetime import datetime
 import requests
 from scipy.stats import pearsonr
 import pandas as pd
+import numpy as np
 from updater import download_binance_current_day_data, download_coingecko_current_day_data
 
 app = Flask(__name__)
@@ -67,7 +68,7 @@ def fetch_sentiment_data():
         print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
         return {'sentiment_score': 0.0}
 
-def calculate_rsi(data, periods=3):
+def calculate_rsi(data, periods=14):
     try:
         delta = data.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
@@ -78,19 +79,41 @@ def calculate_rsi(data, periods=3):
         print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volatility(data, window=2):
+def calculate_volatility(data, window=3):
     try:
         return data.pct_change().rolling(window=window).std()
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating volatility: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_ma(data, window=2):
+def calculate_ma(data, window=3):
     try:
         return data.rolling(window=window).mean()
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    try:
+        exp1 = data.ewm(span=fast, adjust=False).mean()
+        exp2 = data.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_bollinger_bands(data, window=20, num_std=2):
+    try:
+        rolling_mean = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return upper_band, lower_band
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
+        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -164,12 +187,17 @@ def fetch_and_preprocess_data():
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(df)}")
 
-        # Convert initial columns to numeric
+        # Convert initial columns to numeric and handle outliers
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
+                if metric in ["open", "high", "low", "close"]:
+                    q_low, q_high = df[f"{metric}_{pair}"].quantile([0.01, 0.99])
+                    df[f"{metric}_{pair}"] = df[f"{metric}_{pair}"].clip(q_low, q_high)
 
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
+        # Ensure numeric dtypes before interpolation
+        df = df.astype({col: 'float64' for col in df.columns if col not in ['date']})
+        df = df.interpolate(method='linear').ffill().bfill()
 
         if TIMEFRAME != "1m":
             df = df.resample(TIMEFRAME, closed='right', label='right').agg({
@@ -179,15 +207,20 @@ def fetch_and_preprocess_data():
             })
         print(f"[{datetime.now()}] After resampling rows: {len(df)}")
 
+        # Feature generation with logarithmic transformations
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+            df[f"log_close_{pair}"] = np.log1p(df[f"close_{pair}"])
             for lag in [1, 2, 3, 6]:
-                df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
-            df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
-            df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
-            df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+                df[f"log_close_{pair}_lag{lag}"] = df[f"log_close_{pair}"].shift(lag)
+            df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
+            df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
+            df[f"ma3_{pair}"] = calculate_ma(df[f"log_close_{pair}"], window=3)
+            df[f"macd_{pair}"] = calculate_macd(df[f"log_close_{pair}"])
+            df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"log_close_{pair}"])
             df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
-        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_BTCUSDT")
+        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_ETHUSDT")
         df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
         df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
         df["hour_of_day"] = df.index.hour
@@ -201,7 +234,7 @@ def fetch_and_preprocess_data():
         for col in feature_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill().dropna()
+        df = df.interpolate(method='linear').ffill().bfill().dropna()
         print(f"[{datetime.now()}] After NaN handling rows: {len(df)}")
         print(f"[{datetime.now()}] App inference features generated: {list(df.columns)}")
         print(f"[{datetime.now()}] App inference NaN counts: {df.isna().sum().to_dict()}")
@@ -275,6 +308,12 @@ def generate_inference(token):
             cached_data = fetch_and_preprocess_data()
             if cached_data.empty:
                 return Response("Failed to preprocess data", status=500, mimetype='text/plain')
+        
+        if cached_features is None:
+            print(f"[{datetime.now()}] Error: No cached features available, attempting to retrain...")
+            update_data()
+            if cached_features is None:
+                return Response("No features available after retraining", status=500, mimetype='text/plain')
         
         inference = get_inference(token.upper(), TIMEFRAME, REGION, DATA_PROVIDER, cached_features, cached_data)
         
