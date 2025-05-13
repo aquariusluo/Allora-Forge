@@ -1,4 +1,3 @@
-# Test R²: 0.02697
 import json
 import os
 import pickle
@@ -12,7 +11,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, m
 from sklearn.feature_selection import SelectKBest, mutual_info_regression
 from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr, binomtest
-import xgboost as xgb
 import lightgbm as lgb
 from updater import download_binance_daily_data, download_binance_current_day_data, download_coingecko_data, download_coingecko_current_day_data
 from config import data_base_path, model_file_path, scaler_file_path, TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER, MODEL, CG_API_KEY
@@ -22,8 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-07-optimized-v34"
-TRAINING_DAYS = 360
+MODEL_VERSION = "2025-05-13-optimized-v35"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -75,7 +72,7 @@ def fetch_solana_onchain_data():
         print(f"[{datetime.now()}] Error fetching Solana on-chain data: {str(e)}")
         return {'tx_volume': 0}
 
-def calculate_rsi(data, periods=3):
+def calculate_rsi(data, periods=14):
     try:
         delta = data.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
@@ -86,19 +83,41 @@ def calculate_rsi(data, periods=3):
         print(f"[{datetime.now()}] Error calculating RSI: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_volatility(data, window=2):
+def calculate_volatility(data, window=3):
     try:
         return data.pct_change().rolling(window=window).std()
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating volatility: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_ma(data, window=2):
+def calculate_ma(data, window=3):
     try:
         return data.rolling(window=window).mean()
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    try:
+        exp1 = data.ewm(span=fast, adjust=False).mean()
+        exp2 = data.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=signal, adjust=False).mean()
+        return macd - signal_line
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
+        return pd.Series(0, index=data.index)
+
+def calculate_bollinger_bands(data, window=20, num_std=2):
+    try:
+        rolling_mean = data.rolling(window=window).mean()
+        rolling_std = data.rolling(window=window).std()
+        upper_band = rolling_mean + (rolling_std * num_std)
+        lower_band = rolling_mean - (rolling_std * num_std)
+        return upper_band, lower_band
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
+        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -213,10 +232,14 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
         print(f"[{datetime.now()}] Raw columns: {list(price_df.columns)}")
 
-        # Convert initial columns to numeric
+        # Convert initial columns to numeric and handle outliers
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
+                # Clip outliers based on 1st and 99th percentiles
+                if metric in ["open", "high", "low", "close"]:
+                    q_low, q_high = price_df[f"{metric}_{pair}"].quantile([0.01, 0.99])
+                    price_df[f"{metric}_{pair}"] = price_df[f"{metric}_{pair}"].clip(q_low, q_high)
 
         if TIMEFRAME != "1m":
             price_df = price_df.resample(TIMEFRAME, closed='right', label='right').agg({
@@ -228,17 +251,22 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
 
         price_df = price_df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
-        # Feature generation
+        # Feature generation with logarithmic transformations
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+            price_df[f"log_close_{pair}"] = np.log1p(price_df[f"close_{pair}"])
             price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
             for lag in [1, 2, 3, 6]:
-                price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
-            price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"])
-            price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"])
-            price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"])
+                price_df[f"log_close_{pair}_lag{lag}"] = price_df[f"log_close_{pair}"].shift(lag)
+            price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"log_close_{pair}"], periods=14)
+            price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"log_close_{pair}"], window=3)
+            price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"log_close_{pair}"], window=3)
+            price_df[f"macd_{pair}"] = calculate_macd(price_df[f"log_close_{pair}"])
+            price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] pisze
+= calculate_bollinger_bands(price_df[f"log_close_{pair}"])
             price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
 
-        price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
+        price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "log_close_SOLUSDT", "log_close_BTCUSDT")
+        price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "log_close_SOLUSDT", "log_close_ETHUSDT")
         price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
         price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
         price_df["hour_of_day"] = price_df.index.hour
@@ -281,14 +309,14 @@ def load_frame(file_path, timeframe):
         df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
         features = [
-            f"close_{pair}_lag{lag}"
+            f"log_close_{pair}_lag{lag}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
             for lag in [1, 2, 3, 6]
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3", "volume_change"]
-        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
+            for feature in ["rsi", "volatility", "ma3", "macd", "bb_upper", "bb_lower", "volume_change"]
+        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_eth_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -302,7 +330,7 @@ def load_frame(file_path, timeframe):
             print(f"[{datetime.now()}] Error: No samples available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(25, len(features)))
         X_selected = selector.fit_transform(X, y)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
@@ -340,13 +368,14 @@ def weighted_mztae(y_true, y_pred, weights):
         print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
         return float('inf')
 
-def custom_directional_loss(y_true, y_pred):
+def custom_weighted_loss(y_true, y_pred):
     try:
-        mse = mean_squared_error(y_true, y_pred)
+        weights = np.abs(y_true)
+        rmse = np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
         directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-        return mse + 1.0 * directional_error
+        return rmse + 0.5 * directional_error
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating custom directional loss: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating custom weighted loss: {str(e)}")
         return float('inf')
 
 def train_model(timeframe, file_path=training_price_data_path):
@@ -366,43 +395,26 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
 
-        if MODEL == "XGBoost":
-            n_splits = min(5, max(2, len(X_train) - 1))
-            tscv = TimeSeriesSplit(n_splits=n_splits)
-            param_grid = {
-                'learning_rate': [0.005, 0.01, 0.03],
-                'max_depth': [3, 5, 7],
-                'n_estimators': [100, 200, 300],
-                'subsample': [0.7, 0.9, 1.0],
-                'colsample_bytree': [0.7, 0.9, 1.0],
-                'alpha': [0, 5],
-                'lambda': [1, 3]
-            }
-            model = xgb.XGBRegressor(objective="reg:squarederror")
-            grid_search = GridSearchCV(
-                estimator=model,
-                param_grid=param_grid,
-                cv=tscv,
-                scoring=make_scorer(custom_directional_loss, greater_is_better=False),
-                n_jobs=-1,
-                verbose=2
-            )
-            grid_search.fit(X_train, y_train)
-            model = grid_search.best_estimator_
-        elif MODEL == "LightGBM":
-            model = lgb.LGBMRegressor(
-                objective='regression',
-                learning_rate=0.01,
-                max_depth=5,
-                n_estimators=400,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                num_leaves=8,
-                min_child_samples=100
-            )
-            model.fit(X_train, y_train, feature_name=features)
-        else:
-            raise ValueError(f"Unsupported model: {MODEL}")
+        # Optimized LightGBM with early stopping
+        model = lgb.LGBMRegressor(
+            objective='regression',
+            learning_rate=0.005,
+            max_depth=4,
+            n_estimators=600,
+            subsample=0.7,
+            colsample_bytree=0.7,
+            num_leaves=6,
+            min_child_samples=50,
+            lambda_l1=1.0,
+            lambda_l2=1.0
+        )
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_test, y_test)],
+            eval_metric='rmse',
+            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)],
+            feature_name=features
+        )
 
         pred_train = model.predict(X_train)
         pred_test = model.predict(X_test)
@@ -430,6 +442,14 @@ def train_model(timeframe, file_path=training_price_data_path):
         binom_p_value = binomtest(n_successes, len(y_test), p=0.5, alternative='greater').pvalue
         print(f"[{datetime.now()}] Binomial Test p-value for Directional Accuracy: {binom_p_value:.4f}")
 
+        # Calculate 95% confidence interval for directional accuracy
+        n = len(y_test)
+        z = 1.96  # For 95% CI
+        p_hat = directional_accuracy
+        ci_lower = p_hat - z * np.sqrt((p_hat * (1 - p_hat)) / n)
+        ci_upper = p_hat + z * np.sqrt((p_hat * (1 - p_hat)) / n)
+        print(f"[{datetime.now()}] Directional Accuracy 95% CI: [{ci_lower:.4f}, {ci_upper:.4f}]")
+
         print(f"[{datetime.now()}] Training MAE: {train_mae:.6f}, Test MAE: {test_mae:.6f}")
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
@@ -438,7 +458,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
-        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")  # Adjusted for LightGBM
+        print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
 
         os.makedirs(os.path.dirname(model_file_path), exist_ok=True)
         with open(model_file_path, "wb") as f:
@@ -463,7 +483,9 @@ def train_model(timeframe, file_path=training_price_data_path):
             'correlation_p_value': p_value,
             'binom_p_value': binom_p_value,
             'baseline_rmse': baseline_rmse,
-            'baseline_mztae': baseline_mztae
+            'baseline_mztae': baseline_mztae,
+            'ci_lower': ci_lower,
+            'ci_upper': ci_upper
         }
 
         return model, scaler, metrics, features
@@ -514,10 +536,13 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             df = pd.concat([df_btc, df_sol, df_eth], axis=1)
             print(f"[{datetime.now()}] Raw inference DataFrame rows: {len(df)}")
 
-            # Convert relevant columns to numeric
+            # Convert relevant columns to numeric and handle outliers
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
                 for metric in ["open", "high", "low", "close", "volume"]:
                     df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
+                    if metric in ["open", "high", "low", "close"]:
+                        q_low, q_high = df[f"{metric}_{pair}"].quantile([0.01, 0.99])
+                        df[f"{metric}_{pair}"] = df[f"{metric}_{pair}"].clip(q_low, q_high)
 
             df = df.infer_objects(copy=False).interpolate(method='linear').ffill().bfill()
 
@@ -530,14 +555,18 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] After resampling inference rows: {len(df)}")
 
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
+                df[f"log_close_{pair}"] = np.log1p(df[f"close_{pair}"])
                 for lag in [1, 2, 3, 6]:
-                    df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
-                df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=3)
-                df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"])
-                df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=2)
+                    df[f"log_close_{pair}_lag{lag}"] = df[f"log_close_{pair}"].shift(lag)
+                df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
+                df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
+                df[f"ma3_{pair}"] = calculate_ma(df[f"log_close_{pair}"], window=3)
+                df[f"macd_{pair}"] = calculate_macd(df[f"log_close_{pair}"])
+                df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"log_close_{pair}"])
                 df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
-            df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+            df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_BTCUSDT")
+            df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_ETHUSDT")
             df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
             df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
             df["hour_of_day"] = df.index.hour
