@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v35"
+MODEL_VERSION = "2025-05-13-optimized-v36"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -261,8 +261,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"log_close_{pair}"], window=3)
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"log_close_{pair}"], window=3)
             price_df[f"macd_{pair}"] = calculate_macd(price_df[f"log_close_{pair}"])
-            price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] pisze
-= calculate_bollinger_bands(price_df[f"log_close_{pair}"])
+            price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] = calculate_bollinger_bands(price_df[f"log_close_{pair}"])
             price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "log_close_SOLUSDT", "log_close_BTCUSDT")
@@ -453,7 +452,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training MAE: {train_mae:.6f}, Test MAE: {test_mae:.6f}")
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
-        print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
+        print(f"[{datetime.now()}] Weighted RMSE: {test_righted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse:.2f}%")
         print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
