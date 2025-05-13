@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v44"
+MODEL_VERSION = "2025-05-13-optimized-v45"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -71,13 +71,6 @@ def calculate_volatility(data, window=3):
         print(f"[{datetime.now()}] Error calculating volatility: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_ma(data, window=3):
-    try:
-        return data.rolling(window=window).mean()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
-        return pd.Series(0, index=data.index)
-
 def calculate_macd(data, fast=12, slow=26, signal=9):
     try:
         exp1 = data.ewm(span=fast, adjust=False).mean()
@@ -87,13 +80,6 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
         return macd - signal_line
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
-        return pd.Series(0, index=data.index)
-
-def calculate_volume_change(data, window=1):
-    try:
-        return data.pct_change(window).fillna(0)
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
