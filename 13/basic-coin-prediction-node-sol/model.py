@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v43"
+MODEL_VERSION = "2025-05-13-optimized-v44"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -134,6 +134,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                         df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
                         df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
                         df = df.dropna(subset=["date"])
+                        print(f"[{datetime.now()}] BTC file {file} rows: {len(df)}")
                         df.set_index("date", inplace=True)
                         price_df_btc = pd.concat([price_df_btc, df])
                 except Exception as e:
@@ -154,6 +155,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                         df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
                         df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
                         df = df.dropna(subset=["date"])
+                        print(f"[{datetime.now()}] SOL file {file} rows: {len(df)}")
                         df.set_index("date", inplace=True)
                         price_df_sol = pd.concat([price_df_sol, df])
                 except Exception as e:
@@ -174,6 +176,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                         df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
                         df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
                         df = df.dropna(subset=["date"])
+                        print(f"[{datetime.now()}] ETH file {file} rows: {len(df)}")
                         df.set_index("date", inplace=True)
                         price_df_eth = pd.concat([price_df_eth, df])
                 except Exception as e:
@@ -216,23 +219,20 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"close_{pair}"] = price_df[f"close_{pair}"]
-            price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1)  # Target as raw price change
+            price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1)
             for lag in [1, 2]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"], window=3)
-            price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"close_{pair}"], window=3)
             price_df[f"macd_{pair}"] = calculate_macd(price_df[f"close_{pair}"])
-            price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
-        price_df["hour_of_day"] = price_df.index.hour
 
         price_df["target_SOLUSDT"] = price_df["price_change_SOLUSDT"]
 
         # Convert all generated features to numeric
-        feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT', 'hour_of_day']]
+        feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT']]
         for col in feature_columns:
             price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
 
@@ -271,8 +271,8 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3", "macd", "volume_change"]
-        ] + ["hour_of_day", "sol_btc_corr", "sol_eth_corr"]
+            for feature in ["rsi", "volatility", "macd"]
+        ] + ["sol_btc_corr", "sol_eth_corr"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -286,7 +286,7 @@ def load_frame(file_path, timeframe):
             print(f"[{datetime.now()}] Error: Too few samples ({len(X)}) available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(10, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(8, len(features)))
         selector.fit(X, y)
         scores = selector.scores_
         print(f"[{datetime.now()}] Feature scores: {list(zip(features, scores))}")
@@ -335,7 +335,7 @@ def custom_directional_loss(y_true, y_pred):
     try:
         rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-        return rmse + 2.0 * directional_error
+        return rmse + 2.5 * directional_error
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating custom directional loss: {str(e)}")
         return float('inf')
@@ -541,16 +541,13 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                     df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=14)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=3)
-                df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=3)
                 df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
-                df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
-            df["hour_of_day"] = df.index.hour
 
             # Convert all generated features to numeric
-            feature_columns = [col for col in df.columns if col != 'hour_of_day']
+            feature_columns = [col for col in df.columns]
             for col in feature_columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
