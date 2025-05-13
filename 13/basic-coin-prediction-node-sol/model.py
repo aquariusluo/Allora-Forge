@@ -20,8 +20,8 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v38"
-print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
+MODEL_VERSION = "2025-05-13-optimized-v39"
+print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
     try:
@@ -154,10 +154,10 @@ def calculate_volume_change(data, window=1):
 
 def fetch_sentiment_data():
     try:
-        # Placeholder for X post analysis
-        positive_score = 0.1  # Example: count positive keywords in recent posts
-        negative_score = 0.05  # Example: count negative keywords
-        return {'sentiment_score': positive_score - negative_score}
+        positive_keywords = ["bullish", "buy", "up", "solana moon"]
+        negative_keywords = ["bearish", "sell", "down", "crash"]
+        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
+        return {'sentiment_score': sentiment_score}
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
         return {'sentiment_score': 0.0}
@@ -271,11 +271,11 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
 
         price_df = price_df.interpolate(method='linear').ffill().bfill()
 
-        # Feature generation with logarithmic transformations
+        # Simplified feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"log_close_{pair}"] = np.log1p(price_df[f"close_{pair}"])
             price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
-            for lag in [1, 2, 3, 6]:
+            for lag in [1, 2, 3]:
                 price_df[f"log_close_{pair}_lag{lag}"] = price_df[f"log_close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"log_close_{pair}"], periods=14)
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"log_close_{pair}"], window=3)
@@ -332,7 +332,7 @@ def load_frame(file_path, timeframe):
         features = [
             f"log_close_{pair}_lag{lag}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for lag in [1, 2, 3, 6]
+            for lag in [1, 2, 3]
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
@@ -347,12 +347,15 @@ def load_frame(file_path, timeframe):
         X = df[features]
         y = df["target_SOLUSDT"]
 
-        if len(X) < 50:
+        if len(X) < 100:
             print(f"[{datetime.now()}] Error: Too few samples ({len(X)}) available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(30, len(features)))
-        X_selected = selector.fit_transform(X, y)
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
+        selector.fit(X, y)
+        scores = selector.scores_
+        print(f"[{datetime.now()}] Feature scores: {list(zip(features, scores))}")
+        X_selected = selector.transform(X)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
 
@@ -361,7 +364,7 @@ def load_frame(file_path, timeframe):
         X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
-        if split_idx < 20:
+        if split_idx < 50:
             print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets (split_idx={split_idx})")
             return None, None, None, None, None, None
         X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
@@ -422,11 +425,11 @@ def train_model(timeframe, file_path=training_price_data_path):
 
         # Grid search for LightGBM
         param_grid = {
-            'learning_rate': [0.01, 0.05],
-            'max_depth': [4, 6],
-            'num_leaves': [10, 20],
-            'subsample': [0.7, 0.8],
-            'colsample_bytree': [0.7, 0.8]
+            'learning_rate': [0.005, 0.01, 0.05],
+            'max_depth': [3, 5, 7],
+            'num_leaves': [10, 15, 20],
+            'subsample': [0.6, 0.8],
+            'colsample_bytree': [0.6, 0.8]
         }
         model = lgb.LGBMRegressor(
             objective='regression',
@@ -490,8 +493,10 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
-        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / max(baseline_rmse, 1e-10):.2f}%")
-        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / max(baseline_mztae, 1e-10):.2f}%")
+        weighted_rmse_improvement = 100 * (baseline_rmse - test_weighted_rmse) / max(baseline_rmse, 1e-10)
+        weighted_mztae_improvement = 100 * (baseline_mztae - test_mztae) / max(baseline_mztae, 1e-10)
+        print(f"[{datetime.now()}] Weighted RMSE Improvement: {weighted_rmse_improvement:.2f}%")
+        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {weighted_mztae_improvement:.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
         print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
@@ -521,7 +526,9 @@ def train_model(timeframe, file_path=training_price_data_path):
             'baseline_rmse': baseline_rmse,
             'baseline_mztae': baseline_mztae,
             'ci_lower': ci_lower,
-            'ci_upper': ci_upper
+            'ci_upper': ci_upper,
+            'weighted_rmse_improvement': weighted_rmse_improvement,
+            'weighted_mztae_improvement': weighted_mztae_improvement
         }
 
         return model, scaler, metrics, features
@@ -593,7 +600,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
                 df[f"log_close_{pair}"] = np.log1p(df[f"close_{pair}"])
-                for lag in [1, 2, 3, 6]:
+                for lag in [1, 2, 3]:
                     df[f"log_close_{pair}_lag{lag}"] = df[f"log_close_{pair}"].shift(lag)
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
