@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v39"
+MODEL_VERSION = "2025-05-13-optimized-v40"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -291,10 +291,6 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
         price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
         price_df["hour_of_day"] = price_df.index.hour
-        onchain_data = fetch_solana_onchain_data()
-        price_df["sol_tx_volume"] = onchain_data['tx_volume']
-        sentiment_data = fetch_sentiment_data()
-        price_df["sentiment_score"] = sentiment_data['sentiment_score']
 
         price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
 
@@ -337,7 +333,7 @@ def load_frame(file_path, timeframe):
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
             for feature in ["rsi", "volatility", "ma3", "ema12", "macd", "bb_upper", "bb_lower", "atr", "volume_change"]
-        ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_eth_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
+        ] + ["hour_of_day", "sol_btc_corr", "sol_eth_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -347,11 +343,11 @@ def load_frame(file_path, timeframe):
         X = df[features]
         y = df["target_SOLUSDT"]
 
-        if len(X) < 100:
+        if len(X) < 200:
             print(f"[{datetime.now()}] Error: Too few samples ({len(X)}) available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(20, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(15, len(features)))
         selector.fit(X, y)
         scores = selector.scores_
         print(f"[{datetime.now()}] Feature scores: {list(zip(features, scores))}")
@@ -364,7 +360,7 @@ def load_frame(file_path, timeframe):
         X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
-        if split_idx < 50:
+        if split_idx < 100:
             print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets (split_idx={split_idx})")
             return None, None, None, None, None, None
         X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
@@ -380,7 +376,7 @@ def load_frame(file_path, timeframe):
 
 def weighted_rmse(y_true, y_pred, weights):
     try:
-        weights = np.maximum(weights, 1e-10)  # Avoid zero weights
+        weights = np.maximum(weights, 1e-10) / np.sum(weights)  # Normalize weights
         return np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating weighted RMSE: {str(e)}")
@@ -389,21 +385,20 @@ def weighted_rmse(y_true, y_pred, weights):
 def weighted_mztae(y_true, y_pred, weights):
     try:
         ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
-        ref_std = max(ref_std, 1e-10)  # Avoid division by zero
-        weights = np.maximum(weights, 1e-10)
+        ref_std = max(ref_std, 1e-10)
+        weights = np.maximum(weights, 1e-10) / np.sum(weights)
         return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
         return float('inf')
 
-def custom_weighted_loss(y_true, y_pred):
+def custom_directional_loss(y_true, y_pred):
     try:
-        weights = np.abs(y_true)
-        rmse = np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
+        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
         directional_error = np.mean(np.sign(y_true) != np.sign(y_pred))
-        return rmse + 0.5 * directional_error
+        return rmse + 1.0 * directional_error
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating custom weighted loss: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating custom directional loss: {str(e)}")
         return float('inf')
 
 def train_model(timeframe, file_path=training_price_data_path):
@@ -422,37 +417,39 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_rmse = weighted_rmse(y_test, baseline_pred, np.abs(y_test))
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
+        print(f"[{datetime.now()}] Baseline predictions (first 5): {baseline_pred[:5]}")
 
         # Grid search for LightGBM
         param_grid = {
-            'learning_rate': [0.005, 0.01, 0.05],
-            'max_depth': [3, 5, 7],
-            'num_leaves': [10, 15, 20],
-            'subsample': [0.6, 0.8],
-            'colsample_bytree': [0.6, 0.8]
+            'learning_rate': [0.005, 0.01, 0.05, 0.1],
+            'max_depth': [3, 5, 7, 10],
+            'num_leaves': [10, 20, 30],
+            'subsample': [0.6, 0.8, 1.0],
+            'colsample_bytree': [0.6, 0.8, 1.0]
         }
         model = lgb.LGBMRegressor(
             objective='regression',
-            n_estimators=1000,
-            min_child_samples=10,
+            n_estimators=2000,
+            min_child_samples=5,
             min_split_gain=0.0,
-            min_child_weight=0.001
+            min_child_weight=0.0001
         )
         grid_search = GridSearchCV(
             estimator=model,
             param_grid=param_grid,
-            cv=TimeSeriesSplit(n_splits=3),
-            scoring=make_scorer(weighted_rmse, greater_is_better=False),
+            cv=TimeSeriesSplit(n_splits=5),
+            scoring=make_scorer(custom_directional_loss, greater_is_better=False),
             n_jobs=-1,
             verbose=1
         )
         grid_search.fit(X_train, y_train, eval_set=[(X_test, y_test)], eval_metric='rmse',
-                        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True)])
+                        callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=True)])
         model = grid_search.best_estimator_
         print(f"[{datetime.now()}] Best LightGBM params: {grid_search.best_params_}")
 
         pred_train = model.predict(X_train)
         pred_test = model.predict(X_test)
+        print(f"[{datetime.now()}] Model predictions (first 5): {pred_test[:5]}")
 
         # Check prediction variance
         pred_test_std = np.std(pred_test)
@@ -616,10 +613,6 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
             df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
             df["hour_of_day"] = df.index.hour
-            onchain_data = fetch_solana_onchain_data()
-            df["sol_tx_volume"] = onchain_data['tx_volume']
-            sentiment_data = fetch_sentiment_data()
-            df["sentiment_score"] = sentiment_data['sentiment_score']
 
             # Convert all generated features to numeric
             feature_columns = [col for col in df.columns if col != 'hour_of_day']
