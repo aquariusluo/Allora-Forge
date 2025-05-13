@@ -49,7 +49,7 @@ def fetch_solana_onchain_data():
             "method": "getRecentPerformanceSamples",
             "params": [1]
         }
-        response = requests.post(url, headers=headers, json=payload, timeout=5)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)  # Increased timeout
         response.raise_for_status()
         data = response.json()
         tx_volume = data["result"][0]["numTransactions"] if data["result"] else 0
@@ -93,13 +93,6 @@ def calculate_ma(data, window=3):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_ema(data, span=12):
-    try:
-        return data.ewm(span=span, adjust=False).mean()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating EMA: {str(e)}")
-        return pd.Series(0, index=data.index)
-
 def calculate_macd(data, fast=12, slow=26, signal=9):
     try:
         exp1 = data.ewm(span=fast, adjust=False).mean()
@@ -111,27 +104,12 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
         print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
 
-def calculate_bollinger_bands(data, window=20, num_std=2):
+def calculate_volume_change(data, window=1):
     try:
-        rolling_mean = data.rolling(window=window).mean()
-        rolling_std = data.rolling(window=window).std()
-        upper_band = rolling_mean + (rolling_std * num_std)
-        lower_band = rolling_mean - (rolling_std * num_std)
-        return upper_band, lower_band
+        return data.pct_change(window).fillna(0)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
-        return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
-
-def calculate_atr(high, low, close, periods=14):
-    try:
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        return tr.rolling(window=periods).mean()
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating ATR: {str(e)}")
-        return pd.Series(0, index=close.index)
+        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
+        return pd.Series(0, index=data.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -139,13 +117,6 @@ def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
         return corr.fillna(0)
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating cross-asset correlation: {str(e)}")
-        return pd.Series(0, index=data.index)
-
-def calculate_volume_change(data, window=1):
-    try:
-        return data.pct_change(window).fillna(0)
-    except Exception as e:
-        print(f"[{datetime.now()}] Error calculating volume change: {str(e)}")
         return pd.Series(0, index=data.index)
 
 def update_data_periodically():
@@ -205,15 +176,14 @@ def fetch_and_preprocess_data():
         df = pd.concat([df_btc, df_sol, df_eth], axis=1)
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(df)}")
 
-        # Convert initial columns to numeric and handle outliers
+        # Convert initial columns to numeric with relaxed outlier clipping
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 df[f"{metric}_{pair}"] = pd.to_numeric(df[f"{metric}_{pair}"], errors='coerce')
                 if metric in ["open", "high", "low", "close"]:
-                    q_low, q_high = df[f"{metric}_{pair}"].quantile([0.01, 0.99])
+                    q_low, q_high = df[f"{metric}_{pair}"].quantile([0.05, 0.95])
                     df[f"{metric}_{pair}"] = df[f"{metric}_{pair}"].clip(q_low, q_high)
 
-        # Ensure numeric dtypes before interpolation
         df = df.astype({col: 'float64' for col in df.columns if col not in ['date']})
         df = df.interpolate(method='linear').ffill().bfill()
 
@@ -225,29 +195,22 @@ def fetch_and_preprocess_data():
             })
         print(f"[{datetime.now()}] After resampling rows: {len(df)}")
 
-        # Feature generation with logarithmic transformations
+        # Feature generation aligned with model.py
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
-            df[f"log_close_{pair}"] = np.log1p(df[f"close_{pair}"])
-            for lag in [1, 2, 3]:
-                df[f"log_close_{pair}_lag{lag}"] = df[f"log_close_{pair}"].shift(lag)
-            df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
-            df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
-            df[f"ma3_{pair}"] = calculate_ma(df[f"log_close_{pair}"], window=3)
-            df[f"ema12_{pair}"] = calculate_ema(df[f"log_close_{pair}"], span=12)
-            df[f"macd_{pair}"] = calculate_macd(df[f"log_close_{pair}"])
-            df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"log_close_{pair}"])
-            df[f"atr_{pair}"] = calculate_atr(df[f"high_{pair}"], df[f"low_{pair}"], df[f"close_{pair}"])
+            df[f"close_{pair}"] = df[f"close_{pair}"]
+            for lag in [1, 2]:
+                df[f"close_{pair}_lag{lag}"] = df[f"close_{pair}"].shift(lag)
+            df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=14)
+            df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=3)
+            df[f"ma3_{pair}"] = calculate_ma(df[f"close_{pair}"], window=3)
+            df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
             df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
-        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_BTCUSDT")
-        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_ETHUSDT")
+        df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
+        df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
         df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
         df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
         df["hour_of_day"] = df.index.hour
-        onchain_data = fetch_solana_onchain_data()
-        df["sol_tx_volume"] = onchain_data['tx_volume']
-        sentiment_data = fetch_sentiment_data()
-        df["sentiment_score"] = sentiment_data['sentiment_score']
 
         # Convert all generated features to numeric
         feature_columns = [col for col in df.columns if col != 'hour_of_day']
@@ -346,8 +309,8 @@ def generate_inference(token):
             f"Training MAE: {model_metrics.get('train_mae', 0):.6f}\n"
             f"Training RMSE: {model_metrics.get('train_rmse', 0):.6f}\n"
             f"Training R²: {model_metrics.get('train_r2', 0):.6f}\n"
-            f"Test MAE (log returns): {model_metrics.get('test_mae', 0):.6f}\n"
-            f"Test RMSE (log returns): {model_metrics.get('test_rmse', 0):.6f}\n"
+            f"Test MAE (pct change): {model_metrics.get('test_mae', 0):.6f}\n"
+            f"Test RMSE (pct change): {model_metrics.get('test_rmse', 0):.6f}\n"
             f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n"
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
             f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
@@ -359,7 +322,7 @@ def generate_inference(token):
         
         def check_actual_price():
             try:
-                time.sleep(8 * 3600)
+                time.sleep(3600)  # Adjusted for 1h timeframe
                 ticker_url = f'https://api.binance.{REGION}/api/v3/ticker/price?symbol=SOLUSDT'
                 response = requests.get(ticker_url, timeout=2)
                 response.raise_for_status()
@@ -368,8 +331,8 @@ def generate_inference(token):
                 response_current = requests.get(ticker_url_current, timeout=2)
                 response_current.raise_for_status()
                 current_price = float(response_current.json()['price'])
-                actual_log_return = np.log(new_price / current_price)
-                recent_actuals.append(actual_log_return)
+                actual_pct_change = (new_price - current_price) / current_price
+                recent_actuals.append(actual_pct_change)
                 if len(recent_actuals) > 100:
                     recent_actuals.pop(0)
                 
