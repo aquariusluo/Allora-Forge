@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v42"
+MODEL_VERSION = "2025-05-13-optimized-v43"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -216,7 +216,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"close_{pair}"] = price_df[f"close_{pair}"]
-            price_df[f"pct_change_{pair}"] = price_df[f"close_{pair}"].pct_change().shift(-1)
+            price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1)  # Target as raw price change
             for lag in [1, 2]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
@@ -227,11 +227,9 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
-        price_df["sol_btc_vol_ratio"] = price_df["volatility_SOLUSDT"] / (price_df["volatility_BTCUSDT"] + 1e-10)
-        price_df["sol_btc_volume_ratio"] = price_df["volume_change_SOLUSDT"] / (price_df["volume_change_BTCUSDT"] + 1e-10)
         price_df["hour_of_day"] = price_df.index.hour
 
-        price_df["target_SOLUSDT"] = price_df["pct_change_SOLUSDT"]
+        price_df["target_SOLUSDT"] = price_df["price_change_SOLUSDT"]
 
         # Convert all generated features to numeric
         feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT', 'hour_of_day']]
@@ -244,6 +242,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         print(f"[{datetime.now()}] NaN counts: {price_df.isna().sum().to_dict()}")
         print(f"[{datetime.now()}] Dtypes: {price_df.dtypes.to_dict()}")
         print(f"[{datetime.now()}] Feature variances: {price_df[feature_columns].var().to_dict()}")
+        print(f"[{datetime.now()}] Target variance: {price_df['target_SOLUSDT'].var():.6f}")
 
         if len(price_df) == 0:
             print(f"[{datetime.now()}] Error: No data remains after preprocessing. Check data alignment or NaN handling.")
@@ -273,7 +272,7 @@ def load_frame(file_path, timeframe):
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
             for feature in ["rsi", "volatility", "ma3", "macd", "volume_change"]
-        ] + ["hour_of_day", "sol_btc_corr", "sol_eth_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio"]
+        ] + ["hour_of_day", "sol_btc_corr", "sol_eth_corr"]
 
         missing_features = [f for f in features if f not in df.columns]
         if missing_features:
@@ -362,15 +361,15 @@ def train_model(timeframe, file_path=training_price_data_path):
         # Grid search for LightGBM
         param_grid = {
             'learning_rate': [0.01, 0.05],
-            'max_depth': [5, 7],
-            'num_leaves': [15, 30],
+            'max_depth': [7, 10],
+            'num_leaves': [20, 40],
             'subsample': [0.8],
             'colsample_bytree': [0.8]
         }
         model = lgb.LGBMRegressor(
             objective='regression',
             n_estimators=500,
-            min_child_samples=10,
+            min_child_samples=5,
             min_split_gain=0.0,
             min_child_weight=0.0001
         )
@@ -390,6 +389,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         pred_train = model.predict(X_train)
         pred_test = model.predict(X_test)
         print(f"[{datetime.now()}] Model predictions (first 5): {pred_test[:5]}")
+        print(f"[{datetime.now()}] Model prediction variance: {np.var(pred_test):.6f}")
 
         # Check prediction variance
         pred_test_std = np.std(pred_test)
@@ -547,8 +547,6 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
-            df["sol_btc_vol_ratio"] = df["volatility_SOLUSDT"] / (df["volatility_BTCUSDT"] + 1e-10)
-            df["sol_btc_volume_ratio"] = df["volume_change_SOLUSDT"] / (df["volume_change_BTCUSDT"] + 1e-10)
             df["hour_of_day"] = df.index.hour
 
             # Convert all generated features to numeric
@@ -588,12 +586,12 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             print(f"[{datetime.now()}] Error fetching latest price: {str(e)}")
             return 0.0
 
-        pct_change_pred = pred[0]
-        predicted_price = latest_price * (1 + pct_change_pred)
-        print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Pct Change: {pct_change_pred:.6f}")
+        price_change_pred = pred[0]
+        predicted_price = latest_price + price_change_pred
+        print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Price Change: {price_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
-        return pct_change_pred
+        return price_change_pred
 
     except Exception as e:
         print(f"[{datetime.now()}] Error in get_inference: {str(e)}")
@@ -607,7 +605,7 @@ if __name__ == "__main__":
     if not df.empty:
         model, scaler, metrics, features = train_model(TIMEFRAME)
         if model is not None:
-            log_return = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER, features)
+            price_change = get_inference(TOKEN, TIMEFRAME, REGION, DATA_PROVIDER, features)
         else:
             print(f"[{datetime.now()}] Error: Training failed, cannot perform inference")
     else:
