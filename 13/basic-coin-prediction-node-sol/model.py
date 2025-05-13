@@ -1,4 +1,3 @@
-# Optimized-version 1
 import json
 import os
 import pickle
@@ -7,7 +6,7 @@ import pandas as pd
 import numpy as np
 import requests
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, make_scorer
 from sklearn.feature_selection import SelectKBest, mutual_info_regression
 from sklearn.linear_model import LinearRegression
@@ -21,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v37"
+MODEL_VERSION = "2025-05-13-optimized-v38"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -98,6 +97,13 @@ def calculate_ma(data, window=3):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
+def calculate_ema(data, span=12):
+    try:
+        return data.ewm(span=span, adjust=False).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating EMA: {str(e)}")
+        return pd.Series(0, index=data.index)
+
 def calculate_macd(data, fast=12, slow=26, signal=9):
     try:
         exp1 = data.ewm(span=fast, adjust=False).mean()
@@ -120,6 +126,17 @@ def calculate_bollinger_bands(data, window=20, num_std=2):
         print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
         return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
 
+def calculate_atr(high, low, close, periods=14):
+    try:
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr.rolling(window=periods).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating ATR: {str(e)}")
+        return pd.Series(0, index=close.index)
+
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
         corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
@@ -137,10 +154,10 @@ def calculate_volume_change(data, window=1):
 
 def fetch_sentiment_data():
     try:
-        positive_keywords = ["bullish", "buy", "up", "solana moon"]
-        negative_keywords = ["bearish", "sell", "down", "crash"]
-        sentiment_score = 0.1 * len(positive_keywords) - 0.1 * len(negative_keywords)
-        return {'sentiment_score': sentiment_score}
+        # Placeholder for X post analysis
+        positive_score = 0.1  # Example: count positive keywords in recent posts
+        negative_score = 0.05  # Example: count negative keywords
+        return {'sentiment_score': positive_score - negative_score}
     except Exception as e:
         print(f"[{datetime.now()}] Error fetching sentiment data: {str(e)}")
         return {'sentiment_score': 0.0}
@@ -237,7 +254,6 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             for metric in ["open", "high", "low", "close", "volume"]:
                 price_df[f"{metric}_{pair}"] = pd.to_numeric(price_df[f"{metric}_{pair}"], errors='coerce')
-                # Clip outliers based on 1st and 99th percentiles
                 if metric in ["open", "high", "low", "close"]:
                     q_low, q_high = price_df[f"{metric}_{pair}"].quantile([0.01, 0.99])
                     price_df[f"{metric}_{pair}"] = price_df[f"{metric}_{pair}"].clip(q_low, q_high)
@@ -264,8 +280,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"log_close_{pair}"], periods=14)
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"log_close_{pair}"], window=3)
             price_df[f"ma3_{pair}"] = calculate_ma(price_df[f"log_close_{pair}"], window=3)
+            price_df[f"ema12_{pair}"] = calculate_ema(price_df[f"log_close_{pair}"], span=12)
             price_df[f"macd_{pair}"] = calculate_macd(price_df[f"log_close_{pair}"])
             price_df[f"bb_upper_{pair}"], price_df[f"bb_lower_{pair}"] = calculate_bollinger_bands(price_df[f"log_close_{pair}"])
+            price_df[f"atr_{pair}"] = calculate_atr(price_df[f"high_{pair}"], price_df[f"low_{pair}"], price_df[f"close_{pair}"])
             price_df[f"volume_change_{pair}"] = calculate_volume_change(price_df[f"volume_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "log_close_SOLUSDT", "log_close_BTCUSDT")
@@ -318,7 +336,7 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "ma3", "macd", "bb_upper", "bb_lower", "volume_change"]
+            for feature in ["rsi", "volatility", "ma3", "ema12", "macd", "bb_upper", "bb_lower", "atr", "volume_change"]
         ] + ["hour_of_day", "sol_tx_volume", "sol_btc_corr", "sol_eth_corr", "sol_btc_vol_ratio", "sol_btc_volume_ratio", "sentiment_score"]
 
         missing_features = [f for f in features if f not in df.columns]
@@ -329,11 +347,11 @@ def load_frame(file_path, timeframe):
         X = df[features]
         y = df["target_SOLUSDT"]
 
-        if len(X) < 10:
+        if len(X) < 50:
             print(f"[{datetime.now()}] Error: Too few samples ({len(X)}) available for scaling in load_frame")
             return None, None, None, None, None, None
 
-        selector = SelectKBest(score_func=mutual_info_regression, k=min(25, len(features)))
+        selector = SelectKBest(score_func=mutual_info_regression, k=min(30, len(features)))
         X_selected = selector.fit_transform(X, y)
         selected_features = [features[i] for i in selector.get_support(indices=True)]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
@@ -343,13 +361,14 @@ def load_frame(file_path, timeframe):
         X_scaled_df = pd.DataFrame(X_scaled, columns=selected_features, index=X.index)
 
         split_idx = int(len(X) * 0.8)
-        if split_idx < 5:
+        if split_idx < 20:
             print(f"[{datetime.now()}] Error: Not enough data to split into training and test sets (split_idx={split_idx})")
             return None, None, None, None, None, None
         X_train, X_test = X_scaled_df[:split_idx], X_scaled_df[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
         print(f"[{datetime.now()}] Loaded frame: {len(X_train)} training samples, {len(X_test)} test samples, features: {selected_features}")
+        print(f"[{datetime.now()}] Target variance: {y.var():.6f}")
         return X_train, X_test, y_train, y_test, scaler, selected_features
 
     except Exception as e:
@@ -358,6 +377,7 @@ def load_frame(file_path, timeframe):
 
 def weighted_rmse(y_true, y_pred, weights):
     try:
+        weights = np.maximum(weights, 1e-10)  # Avoid zero weights
         return np.sqrt(np.average((y_true - y_pred) ** 2, weights=weights))
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating weighted RMSE: {str(e)}")
@@ -366,6 +386,8 @@ def weighted_rmse(y_true, y_pred, weights):
 def weighted_mztae(y_true, y_pred, weights):
     try:
         ref_std = np.std(y_true[-100:]) if len(y_true) >= 100 else np.std(y_true)
+        ref_std = max(ref_std, 1e-10)  # Avoid division by zero
+        weights = np.maximum(weights, 1e-10)
         return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
@@ -398,28 +420,33 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
 
-        # Relaxed LightGBM with simplified constraints
+        # Grid search for LightGBM
+        param_grid = {
+            'learning_rate': [0.01, 0.05],
+            'max_depth': [4, 6],
+            'num_leaves': [10, 20],
+            'subsample': [0.7, 0.8],
+            'colsample_bytree': [0.7, 0.8]
+        }
         model = lgb.LGBMRegressor(
             objective='regression',
-            learning_rate=0.01,
-            max_depth=6,
             n_estimators=1000,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            num_leaves=15,
-            min_child_samples=20,
-            lambda_l1=0.5,
-            lambda_l2=0.5,
+            min_child_samples=10,
             min_split_gain=0.0,
             min_child_weight=0.001
         )
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
-            eval_metric='rmse',
-            callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True)],
-            feature_name=features
+        grid_search = GridSearchCV(
+            estimator=model,
+            param_grid=param_grid,
+            cv=TimeSeriesSplit(n_splits=3),
+            scoring=make_scorer(weighted_rmse, greater_is_better=False),
+            n_jobs=-1,
+            verbose=1
         )
+        grid_search.fit(X_train, y_train, eval_set=[(X_test, y_test)], eval_metric='rmse',
+                        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True)])
+        model = grid_search.best_estimator_
+        print(f"[{datetime.now()}] Best LightGBM params: {grid_search.best_params_}")
 
         pred_train = model.predict(X_train)
         pred_test = model.predict(X_test)
@@ -442,7 +469,6 @@ def train_model(timeframe, file_path=training_price_data_path):
         test_mztae = weighted_mztae(y_test, pred_test, weights)
         directional_accuracy = np.mean(np.sign(pred_test) == np.sign(y_test))
         
-        # Handle constant predictions in correlation
         if np.std(pred_test) < 1e-10:
             correlation, p_value = 0.0, 1.0
         else:
@@ -464,8 +490,8 @@ def train_model(timeframe, file_path=training_price_data_path):
         print(f"[{datetime.now()}] Training RMSE: {train_rmse:.6f}, Test RMSE: {test_rmse:.6f}")
         print(f"[{datetime.now()}] Training R²: {train_r2:.6f}, Test R²: {test_r2:.6f}")
         print(f"[{datetime.now()}] Weighted RMSE: {test_weighted_rmse:.6f}, Weighted MZTAE: {test_mztae:.6f}")
-        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / baseline_rmse:.2f}%")
-        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / baseline_mztae:.2f}%")
+        print(f"[{datetime.now()}] Weighted RMSE Improvement: {100 * (baseline_rmse - test_weighted_rmse) / max(baseline_rmse, 1e-10):.2f}%")
+        print(f"[{datetime.now()}] Weighted MZTAE Improvement: {100 * (baseline_mztae - test_mztae) / max(baseline_mztae, 1e-10):.2f}%")
         print(f"[{datetime.now()}] Directional Accuracy: {directional_accuracy:.4f}")
         print(f"[{datetime.now()}] Correlation: {correlation:.4f}, p-value: {p_value:.4f}")
         print(f"[{datetime.now()}] Feature importances: {list(zip(features, model.feature_importances_))}")
@@ -572,8 +598,10 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
                 df[f"ma3_{pair}"] = calculate_ma(df[f"log_close_{pair}"], window=3)
+                df[f"ema12_{pair}"] = calculate_ema(df[f"log_close_{pair}"], span=12)
                 df[f"macd_{pair}"] = calculate_macd(df[f"log_close_{pair}"])
                 df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"log_close_{pair}"])
+                df[f"atr_{pair}"] = calculate_atr(df[f"high_{pair}"], df[f"low_{pair}"], df[f"close_{pair}"])
                 df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_BTCUSDT")
