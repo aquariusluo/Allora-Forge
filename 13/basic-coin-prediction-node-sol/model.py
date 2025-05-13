@@ -222,6 +222,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         for col in feature_columns:
             price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
 
+        print(f"[{datetime.now()}] Rows before NaN handling: {len(price_df)}")
         price_df = price_df.dropna(subset=["target_SOLUSDT"])
         print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
