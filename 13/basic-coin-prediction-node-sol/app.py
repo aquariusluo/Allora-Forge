@@ -14,7 +14,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM, 8h timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
 
 recent_predictions = []
 recent_actuals = []
@@ -93,6 +93,13 @@ def calculate_ma(data, window=3):
         print(f"[{datetime.now()}] Error calculating MA: {str(e)}")
         return pd.Series(0, index=data.index)
 
+def calculate_ema(data, span=12):
+    try:
+        return data.ewm(span=span, adjust=False).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating EMA: {str(e)}")
+        return pd.Series(0, index=data.index)
+
 def calculate_macd(data, fast=12, slow=26, signal=9):
     try:
         exp1 = data.ewm(span=fast, adjust=False).mean()
@@ -114,6 +121,17 @@ def calculate_bollinger_bands(data, window=20, num_std=2):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating Bollinger Bands: {str(e)}")
         return pd.Series(0, index=data.index), pd.Series(0, index=data.index)
+
+def calculate_atr(high, low, close, periods=14):
+    try:
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr.rolling(window=periods).mean()
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating ATR: {str(e)}")
+        return pd.Series(0, index=close.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -210,13 +228,15 @@ def fetch_and_preprocess_data():
         # Feature generation with logarithmic transformations
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             df[f"log_close_{pair}"] = np.log1p(df[f"close_{pair}"])
-            for lag in [1, 2, 3, 6]:
+            for lag in [1, 2, 3]:
                 df[f"log_close_{pair}_lag{lag}"] = df[f"log_close_{pair}"].shift(lag)
             df[f"rsi_{pair}"] = calculate_rsi(df[f"log_close_{pair}"], periods=14)
             df[f"volatility_{pair}"] = calculate_volatility(df[f"log_close_{pair}"], window=3)
             df[f"ma3_{pair}"] = calculate_ma(df[f"log_close_{pair}"], window=3)
+            df[f"ema12_{pair}"] = calculate_ema(df[f"log_close_{pair}"], span=12)
             df[f"macd_{pair}"] = calculate_macd(df[f"log_close_{pair}"])
             df[f"bb_upper_{pair}"], df[f"bb_lower_{pair}"] = calculate_bollinger_bands(df[f"log_close_{pair}"])
+            df[f"atr_{pair}"] = calculate_atr(df[f"high_{pair}"], df[f"low_{pair}"], df[f"close_{pair}"])
             df[f"volume_change_{pair}"] = calculate_volume_change(df[f"volume_{pair}"])
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "log_close_SOLUSDT", "log_close_BTCUSDT")
@@ -332,8 +352,8 @@ def generate_inference(token):
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
             f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
             f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
-            f"Weighted RMSE Improvement: {100 * (model_metrics.get('baseline_rmse', 1) - model_metrics.get('test_weighted_rmse', float('inf'))) / model_metrics.get('baseline_rmse', 1):.2f}%\n"
-            f"Weighted MZTAE Improvement: {100 * (model_metrics.get('baseline_mztae', 1) - model_metrics.get('test_mztae', float('inf'))) / model_metrics.get('baseline_mztae', 1):.2f}%"
+            f"Weighted RMSE Improvement: {model_metrics.get('weighted_rmse_improvement', 0):.2f}%\n"
+            f"Weighted MZTAE Improvement: {model_metrics.get('weighted_mztae_improvement', 0):.2f}%"
         )
         print(metrics_log)
         
