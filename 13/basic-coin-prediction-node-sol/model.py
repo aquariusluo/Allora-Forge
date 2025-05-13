@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-13-optimized-v45"
+MODEL_VERSION = "2025-05-14-optimized-v46"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -205,7 +205,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         # Feature generation
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"close_{pair}"] = price_df[f"close_{pair}"]
-            price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1)
+            price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1) / price_df[f"close_{pair}"]
             for lag in [1, 2]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
@@ -571,7 +571,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             return 0.0
 
         price_change_pred = pred[0]
-        predicted_price = latest_price + price_change_pred
+        predicted_price = latest_price * (1 + price_change_pred)
         print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Price Change: {price_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
