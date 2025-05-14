@@ -373,7 +373,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_rmse = weighted_rmse(y_test, baseline_pred, np.abs(y_test))
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
-        print(f"[{datetime.now()]] Baseline predictions (first 5): {baseline_pred[:5]}")
+        print(f"[{datetime.now()}] Baseline predictions (first 5): {baseline_pred[:5]}")
 
         # Grid search for LightGBM
         param_grid = {
@@ -606,7 +606,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         if "log_return" in df.columns and df["log_return_SOLUSDT"].var() > df.get("price_change_SOLUSDT", pd.Series()).var():
             predicted_price = latest_price * np.exp(price_change_pred)
         else:
-            predicted_price = latest_price * (1 + price_change_pred)
+            predicted_price = latestDE
         print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Price Change: {price_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
