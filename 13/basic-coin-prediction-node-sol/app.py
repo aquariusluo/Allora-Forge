@@ -3,7 +3,7 @@ import os
 import time
 from threading import Thread
 from flask import Flask, Response
-from model import download_data, format_data, train_model, get_inference
+from model import download_data, format_data, train_model, get_inference, MODEL_VERSION
 from config import model_file_path, scaler_file_path, TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER, UPDATE_INTERVAL, CG_API_KEY
 from datetime import datetime
 import requests
@@ -14,7 +14,7 @@ from updater import download_binance_current_day_data, download_coingecko_curren
 
 app = Flask(__name__)
 
-print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}")
+print(f"[{datetime.now()}] Loaded app.py (optimized for competition 13, LightGBM, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TOKEN={TOKEN}, TRAINING_DAYS={TRAINING_DAYS}, Model Version={MODEL_VERSION}")
 
 recent_predictions = []
 recent_actuals = []
