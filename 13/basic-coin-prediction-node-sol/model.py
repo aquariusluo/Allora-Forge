@@ -44,11 +44,16 @@ def download_data_coingecko(token, training_days):
 def download_data(token, training_days, region, data_provider):
     try:
         if data_provider == "coingecko":
-            return download_data_coingecko(token, int(training_days))
+            files = download_data_coingecko(token, int(training_days))
         elif data_provider == "binance":
-            return download_data_binance(token, training_days, region)
+            files = download_data_binance(token, training_days, region)
+            if len(files) < training_days * 0.8:  # Fallback if <80% of days fetched
+                print(f"[{datetime.now()}] Warning: Only {len(files)} files downloaded for {token}, falling back to CoinGecko")
+                files = download_data_coingecko(token, int(training_days))
         else:
             raise ValueError("Unsupported data provider")
+        print(f"[{datetime.now()}] Total files downloaded for {token}: {len(files)}")
+        return files
     except Exception as e:
         print(f"[{datetime.now()}] Error downloading data for {token}: {str(e)}")
         return []
@@ -109,6 +114,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             files_btc = sorted([f for f in files_btc if "BTCUSDT" in os.path.basename(f) and f.endswith(".zip")])
             files_sol = sorted([f for f in files_sol if "SOLUSDT" in os.path.basename(f) and f.endswith(".zip")])
             files_eth = sorted([f for f in files_eth if "ETHUSDT" in os.path.basename(f) and f.endswith(".zip")])
+        else:
+            files_btc = sorted([f for f in files_btc if "BTC" in os.path.basename(f) and f.endswith(".csv")])
+            files_sol = sorted([f for f in files_sol if "SOL" in os.path.basename(f) and f.endswith(".csv")])
+            files_eth = sorted([f for f in files_eth if "ETH" in os.path.basename(f) and f.endswith(".csv")])
 
         price_df_btc = pd.DataFrame()
         price_df_sol = pd.DataFrame()
@@ -174,6 +183,45 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                         print(f"[{datetime.now()}] ETH file {file} rows: {len(df)}")
                         df.set_index("date", inplace=True)
                         price_df_eth = pd.concat([price_df_eth, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing ETH file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
+        else:
+            for file in files_btc:
+                try:
+                    df = pd.read_csv(file)
+                    df["date"] = pd.to_datetime(df["date"], utc=True)
+                    df = df.dropna(subset=["date"])
+                    print(f"[{datetime.now()}] BTC file {file} rows: {len(df)}")
+                    df.set_index("date", inplace=True)
+                    price_df_btc = pd.concat([price_df_btc, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing BTC file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
+
+            for file in files_sol:
+                try:
+                    df = pd.read_csv(file)
+                    df["date"] = pd.to_datetime(df["date"], utc=True)
+                    df = df.dropna(subset=["date"])
+                    print(f"[{datetime.now()}] SOL file {file} rows: {len(df)}")
+                    df.set_index("date", inplace=True)
+                    price_df_sol = pd.concat([price_df_sol, df])
+                except Exception as e:
+                    print(f"[{datetime.now()}] Error processing SOL file {file}: {str(e)}")
+                    skipped_files.append(file)
+                    continue
+
+            for file in files_eth:
+                try:
+                    df = pd.read_csv(file)
+                    df["date"] = pd.to_datetime(df["date"], utc=True)
+                    df = df.dropna(subset=["date"])
+                    print(f"[{datetime.now()}] ETH file {file} rows: {len(df)}")
+                    df.set_index("date", inplace=True)
+                    price_df_eth = pd.concat([price_df_eth, df])
                 except Exception as e:
                     print(f"[{datetime.now()}] Error processing ETH file {file}: {str(e)}")
                     skipped_files.append(file)
@@ -288,7 +336,7 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "macd", "stoch"]
+            for feature in ["rsi", "macd", "stoch"]
         ] + ["sol_btc_corr", "sol_eth_corr"]
 
         missing_features = [f for f in features if f not in df.columns]
@@ -307,8 +355,11 @@ def load_frame(file_path, timeframe):
         selector.fit(X, y)
         scores = selector.scores_
         print(f"[{datetime.now()}] Feature scores: {list(zip(features, scores))}")
-        X_selected = selector.transform(X)
-        selected_features = [features[i] for i in selector.get_support(indices=True)]
+        selected_features = [f for f, s in zip(features, scores) if s > 0.01]
+        if not selected_features:
+            print(f"[{datetime.now()}] Warning: No features with score > 0.01, using top 8")
+            selected_features = [features[i] for i in np.argsort(scores)[-8:]]
+        X_selected = X[selected_features]
         X_selected_df = pd.DataFrame(X_selected, columns=selected_features, index=X.index)
 
         scaler = StandardScaler()
@@ -419,7 +470,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         train_rmse = np.sqrt(mean_squared_error(y_train, pred_train))
         test_rmse = np.sqrt(mean_squared_error(y_test, pred_test))
         train_r2 = r2_score(y_train, pred_train)
-        test_r2 = r2_score(y_test, pred_test)
+        test_r2 = r2_score(y_test, pred_train)
         train_weighted_rmse = weighted_rmse(y_train, pred_train, np.abs(y_train))
         test_weighted_rmse = weighted_rmse(y_test, pred_test, weights)
         train_mztae = weighted_mztae(y_train, pred_train, np.abs(y_train))
