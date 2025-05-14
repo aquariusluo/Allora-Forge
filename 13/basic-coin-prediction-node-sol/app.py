@@ -97,6 +97,15 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
         print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
 
+def calculate_stochastic_oscillator(high, low, close, periods=14):
+    try:
+        lowest_low = low.rolling(window=periods).min()
+        highest_high = high.rolling(window=periods).max()
+        return 100 * (close - lowest_low) / (highest_high - lowest_low)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating Stochastic Oscillator: {str(e)}")
+        return pd.Series(0, index=close.index)
+
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
         corr = data[pair1].pct_change().rolling(window=window).corr(data[pair2].pct_change())
@@ -189,6 +198,7 @@ def fetch_and_preprocess_data():
             df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=14)
             df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=3)
             df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
+            df[f"stoch_{pair}"] = calculate_stochastic_oscillator(df[f"high_{pair}"], df[f"low_{pair}"], df[f"close_{pair}"])
 
         df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
         df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
