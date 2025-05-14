@@ -310,6 +310,7 @@ def generate_inference(token):
             f"Weighted MZTAE Improvement: {model_metrics.get('weighted_mztae_improvement', 0):.2f}%"
         )
         print(metrics_log)
+        print(f"[{datetime.now()}] Inference features used: {cached_features}")
         
         def check_actual_price():
             try:
