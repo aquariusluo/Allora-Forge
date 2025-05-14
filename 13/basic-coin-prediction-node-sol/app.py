@@ -281,11 +281,7 @@ def generate_inference(token):
         if cached_features is None or cached_data is None or (time.time() - last_data_update) > parse_interval(UPDATE_INTERVAL):
             cached_data = fetch_and_preprocess_data()
             if cached_data.empty:
-                print(f"[{datetime.now()}] Failed to preprocess data, attempting to retrain...")
-                update_data()
-                cached_data = fetch_and_preprocess_data()
-                if cached_data.empty:
-                    return Response("Failed to preprocess data after retraining", status=500, mimetype='text/plain')
+                return Response("Failed to preprocess data", status=500, mimetype='text/plain')
         
         if cached_features is None:
             print(f"[{datetime.now()}] Error: No cached features available, attempting to retrain...")
