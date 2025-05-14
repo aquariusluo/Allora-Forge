@@ -222,6 +222,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]:
             price_df[f"close_{pair}"] = price_df[f"close_{pair}"]
             price_df[f"price_change_{pair}"] = price_df[f"close_{pair}"].diff().shift(-1) / price_df[f"close_{pair}"]
+            price_df[f"log_return_{pair}"] = np.log(price_df[f"close_{pair}"].shift(-1) / price_df[f"close_{pair}"])
             for lag in [1, 2]:
                 price_df[f"close_{pair}_lag{lag}"] = price_df[f"close_{pair}"].shift(lag)
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
@@ -232,10 +233,21 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
 
-        price_df["target_SOLUSDT"] = price_df["price_change_SOLUSDT"]
+        # Select target based on variance
+        price_change_var = price_df["price_change_SOLUSDT"].var()
+        log_return_var = price_df["log_return_SOLUSDT"].var()
+        print(f"[{datetime.now()}] Price change variance: {price_change_var:.6f}, Log return variance: {log_return_var:.6f}")
+        if log_return_var > price_change_var and log_return_var > 0.01:
+            price_df["target_SOLUSDT"] = price_df["log_return_SOLUSDT"]
+            q_low, q_high = price_df["target_SOLUSDT"].quantile([0.05, 0.95])
+            price_df["target_SOLUSDT"] = price_df["target_SOLUSDT"].clip(q_low, q_high)
+            print(f"[{datetime.now()}] Using log return as target")
+        else:
+            price_df["target_SOLUSDT"] = price_df["price_change_SOLUSDT"]
+            print(f"[{datetime.now()}] Using price change as target")
 
         # Convert all generated features to numeric
-        feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT']]
+        feature_columns = [col for col in price_df.columns if col not in ['target_SOLUSDT', 'price_change_SOLUSDT', 'log_return_SOLUSDT']]
         for col in feature_columns:
             price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
 
@@ -361,7 +373,7 @@ def train_model(timeframe, file_path=training_price_data_path):
         baseline_rmse = weighted_rmse(y_test, baseline_pred, np.abs(y_test))
         baseline_mztae = weighted_mztae(y_test, baseline_pred, np.abs(y_test))
         print(f"[{datetime.now()}] Baseline (Linear Regression) Weighted RMSE: {baseline_rmse:.6f}, Weighted MZTAE: {baseline_mztae:.6f}")
-        print(f"[{datetime.now()}] Baseline predictions (first 5): {baseline_pred[:5]}")
+        print(f"[{datetime.now()]] Baseline predictions (first 5): {baseline_pred[:5]}")
 
         # Grid search for LightGBM
         param_grid = {
@@ -590,7 +602,11 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
             return 0.0
 
         price_change_pred = pred[0]
-        predicted_price = latest_price * (1 + price_change_pred)
+        # Adjust prediction based on target type
+        if "log_return" in df.columns and df["log_return_SOLUSDT"].var() > df.get("price_change_SOLUSDT", pd.Series()).var():
+            predicted_price = latest_price * np.exp(price_change_pred)
+        else:
+            predicted_price = latest_price * (1 + price_change_pred)
         print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Price Change: {price_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
