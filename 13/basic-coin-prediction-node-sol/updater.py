@@ -57,13 +57,13 @@ def download_binance_daily_data(pair, training_days, region, output_path):
         call_count = 0
         total_rows = 0
         failed_dates = []
-        while current_date < end_date:
+        while current_date <= end_date:
             date_str = current_date.strftime("%Y-%m-%d")
             url = f"https://data.binance.vision/data/spot/daily/klines/{pair}/1m/{pair}-1m-{date_str}.zip"
             output_file = os.path.join(output_path, f"{pair}-1m-{date_str}.zip")
             call_count += 1
             attempts = 0
-            max_attempts = 5
+            max_attempts = 10
             while attempts < max_attempts:
                 try:
                     response = requests.get(url, timeout=10)
