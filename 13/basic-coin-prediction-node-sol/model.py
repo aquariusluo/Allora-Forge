@@ -12,7 +12,7 @@ from sklearn.feature_selection import SelectKBest, mutual_info_regression
 from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr, binomtest
 import lightgbm as lgb
-from updater import download_binance_daily_data, download_binance現在の日付データ, download_coingecko_data, download_coingecko現在の日付データ
+from updater import download_binance_daily_data, download_binance_current_day_data, download_coingecko_data, download_coingecko_current_day_data
 from config import data_base_path, model_file_path, scaler_file_path, TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER, MODEL, CG_API_KEY
 from datetime import datetime
 
@@ -169,7 +169,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
                     with myzip.open(myzip.filelist[0]) as f:
                         df = pd.read_csv(f, header=None)
                         df.columns = ["start_time", "open", "high", "low", "close", "volume", "end_time", "volume_usd", "n_trades", "taker_volume", "taker_volume_usd", "ignore"]
-                        df["date"] = pd.to_datetime.дата(df["end_time"], unit="ms", errors='coerce', utc=True)
+                        df["date"] = pd.to_datetime(df["end_time"], unit="ms", errors='coerce', utc=True)
                         df = df.dropna(subset=["date"])
                         print(f"[{datetime.now()}] ETH file {file} rows: {len(df)}")
                         df.set_index("date", inplace=True)
@@ -502,13 +502,13 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         df = cached_data
         if df is None:
             if data_provider == "coingecko":
-                df_btc = download_coingecko現在の日付データ("BTC", CG_API_KEY)
-                df_sol = download_coingecko現在の日付データ("SOL", CG_API_KEY)
-                df_eth = download_coingecko現在の日付データ("ETH", CG_API_KEY)
+                df_btc = download_coingecko_current_day_data("BTC", CG_API_KEY)
+                df_sol = download_coingecko_current_day_data("SOL", CG_API_KEY)
+                df_eth = download_coingecko_current_day_data("ETH", CG_API_KEY)
             else:
-                df_btc = download_binance現在の日付データ("BTCUSDT", region)
-                df_sol = download_binance現在の日付データ("SOLUSDT", region)
-                df_eth = download_binance現在の日付データ("ETHUSDT", region)
+                df_btc = download_binance_current_day_data("BTCUSDT", region)
+                df_sol = download_binance_current_day_data("SOLUSDT", region)
+                df_eth = download_binance_current_day_data("ETHUSDT", region)
 
             df_btc['date'] = pd.to_datetime(df_btc['date'], utc=True)
             df_sol['date'] = pd.to_datetime(df_sol['date'], utc=True)
