@@ -56,28 +56,34 @@ def download_binance_daily_data(pair, training_days, region, output_path):
         files = []
         call_count = 0
         total_rows = 0
+        failed_dates = []
         while current_date < end_date:
             date_str = current_date.strftime("%Y-%m-%d")
             url = f"https://data.binance.vision/data/spot/daily/klines/{pair}/1m/{pair}-1m-{date_str}.zip"
             output_file = os.path.join(output_path, f"{pair}-1m-{date_str}.zip")
             call_count += 1
-            response = requests.get(url)
-            if response.status_code == 200:
-                with open(output_file, "wb") as f:
-                    f.write(response.content)
-                with zipfile.ZipFile(output_file, "r") as zip_ref:
-                    csv_file = zip_ref.namelist()[0]
-                    with zip_ref.open(csv_file) as f:
-                        df = pd.read_csv(f, header=None)
-                        rows = len(df)
-                        total_rows += rows
-                        logger.info(f"[{datetime.now()}] Downloaded {pair} for {date_str}: {rows} rows, call {call_count}")
-                files.append(output_file)
-            else:
-                logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: {response.status_code}")
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    with open(output_file, "wb") as f:
+                        f.write(response.content)
+                    with zipfile.ZipFile(output_file, "r") as zip_ref:
+                        csv_file = zip_ref.namelist()[0]
+                        with zip_ref.open(csv_file) as f:
+                            df = pd.read_csv(f, header=None)
+                            rows = len(df)
+                            total_rows += rows
+                            logger.info(f"[{datetime.now()}] Downloaded {pair} for {date_str}: {rows} rows, call {call_count}")
+                    files.append(output_file)
+                else:
+                    logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}")
+                    failed_dates.append(date_str)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"[{datetime.now()}] Error downloading {pair} for {date_str}: {str(e)}")
+                failed_dates.append(date_str)
             current_date += timedelta(days=1)
             time.sleep(0.1)  # Avoid rate limits
-        logger.info(f"[{datetime.now()}] Total API calls for {pair}: {call_count}, total rows: {total_rows}")
+        logger.info(f"[{datetime.now()}] Total API calls for {pair}: {call_count}, total rows: {total_rows}, failed dates: {failed_dates}")
         return files
     except Exception as e:
         logger.error(f"[{datetime.now()}] Error downloading Binance daily data for {pair}: {str(e)}")
