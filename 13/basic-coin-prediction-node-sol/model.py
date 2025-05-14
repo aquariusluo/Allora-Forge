@@ -606,7 +606,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
         if "log_return" in df.columns and df["log_return_SOLUSDT"].var() > df.get("price_change_SOLUSDT", pd.Series()).var():
             predicted_price = latest_price * np.exp(price_change_pred)
         else:
-            predicted_price = latestDE
+            predicted_price = latest_price * (1 + price_change_pred)
         print(f"[{datetime.now()}] Predicted {timeframe} SOL/USD Price Change: {price_change_pred:.6f}")
         print(f"[{datetime.now()}] Latest SOL Price: {latest_price:.3f}")
         print(f"[{datetime.now()}] Predicted SOL Price in {timeframe}: {predicted_price:.3f}")
