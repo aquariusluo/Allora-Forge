@@ -186,6 +186,13 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         price_df_btc = price_df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
         price_df_sol = price_df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
         price_df_eth = price_df_eth.rename(columns=lambda x: f"{x}_ETHUSDT")
+        print(f"[{datetime.now()}] Aligning data for BTC, SOL, ETH...")
+        all_dates = pd.Index(list(set(price_df_btc.index).intersection(set(price_df_sol.index), set(price_df_eth.index))), name='date')
+        price_df_btc = price_df_btc.reindex(all_dates)
+        price_df_sol = price_df_sol.reindex(all_dates)
+        price_df_eth = price_df_eth.reindex(all_dates)
+        print(f"[{datetime.now()}] Aligned data rows: {len(all_dates)}")
+
         price_df = pd.concat([price_df_btc, price_df_sol, price_df_eth], axis=1)
         print(f"[{datetime.now()}] Raw concatenated DataFrame rows: {len(price_df)}")
         print(f"[{datetime.now()}] Raw columns: {list(price_df.columns)}")
@@ -233,6 +240,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
 
         print(f"[{datetime.now()}] Rows before NaN handling: {len(price_df)}")
+        print(f"[{datetime.now()}] NaN counts before dropna: {price_df.isna().sum().to_dict()}")
         price_df = price_df.dropna(subset=["target_SOLUSDT"])
         print(f"[{datetime.now()}] After NaN handling rows: {len(price_df)}")
         print(f"[{datetime.now()}] Features generated: {list(price_df.columns)}")
