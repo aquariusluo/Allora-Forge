@@ -82,11 +82,11 @@ def download_binance_daily_data(pair, training_days, region, output_path):
                     else:
                         logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}, attempt {attempts + 1}, response: {response.text[:100]}")
                         attempts += 1
-                        time.sleep(2)
+                        time.sleep(5)  # Increased delay for rate limits
                 except requests.exceptions.RequestException as e:
                     logger.error(f"[{datetime.now()}] Error downloading {pair} for {date_str}: {str(e)}, attempt {attempts + 1}")
                     attempts += 1
-                    time.sleep(2)
+                    time.sleep(5)
             if attempts == max_attempts:
                 logger.error(f"[{datetime.now()}] Gave up downloading {pair} for {date_str} after {max_attempts} attempts")
                 failed_dates.append(date_str)
