@@ -63,7 +63,7 @@ def download_binance_daily_data(pair, training_days, region, output_path):
             output_file = os.path.join(output_path, f"{pair}-1m-{date_str}.zip")
             call_count += 1
             attempts = 0
-            max_attempts = 3
+            max_attempts = 5
             while attempts < max_attempts:
                 try:
                     response = requests.get(url, timeout=10)
@@ -80,13 +80,13 @@ def download_binance_daily_data(pair, training_days, region, output_path):
                         files.append(output_file)
                         break
                     else:
-                        logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}, attempt {attempts + 1}")
+                        logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}, attempt {attempts + 1}, response: {response.text[:100]}")
                         attempts += 1
-                        time.sleep(1)
+                        time.sleep(2)
                 except requests.exceptions.RequestException as e:
                     logger.error(f"[{datetime.now()}] Error downloading {pair} for {date_str}: {str(e)}, attempt {attempts + 1}")
                     attempts += 1
-                    time.sleep(1)
+                    time.sleep(2)
             if attempts == max_attempts:
                 logger.error(f"[{datetime.now()}] Gave up downloading {pair} for {date_str} after {max_attempts} attempts")
                 failed_dates.append(date_str)
