@@ -20,7 +20,7 @@ binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
 training_price_data_path = os.path.join(data_base_path, "price_data.csv")
 
-MODEL_VERSION = "2025-05-14-optimized-v46"
+MODEL_VERSION = "2025-05-14-optimized-v47"
 print(f"[{datetime.now()}] Loaded model.py version {MODEL_VERSION} (single model: {MODEL}, {TIMEFRAME} timeframe) at {os.path.abspath(__file__)} with TIMEFRAME={TIMEFRAME}, TRAINING_DAYS={TRAINING_DAYS}")
 
 def download_data_binance(token, training_days, region):
@@ -81,6 +81,15 @@ def calculate_macd(data, fast=12, slow=26, signal=9):
     except Exception as e:
         print(f"[{datetime.now()}] Error calculating MACD: {str(e)}")
         return pd.Series(0, index=data.index)
+
+def calculate_stochastic_oscillator(high, low, close, periods=14):
+    try:
+        lowest_low = low.rolling(window=periods).min()
+        highest_high = high.rolling(window=periods).max()
+        return 100 * (close - lowest_low) / (highest_high - lowest_low)
+    except Exception as e:
+        print(f"[{datetime.now()}] Error calculating Stochastic Oscillator: {str(e)}")
+        return pd.Series(0, index=close.index)
 
 def calculate_cross_asset_correlation(data, pair1, pair2, window=5):
     try:
@@ -211,6 +220,7 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
             price_df[f"rsi_{pair}"] = calculate_rsi(price_df[f"close_{pair}"], periods=14)
             price_df[f"volatility_{pair}"] = calculate_volatility(price_df[f"close_{pair}"], window=3)
             price_df[f"macd_{pair}"] = calculate_macd(price_df[f"close_{pair}"])
+            price_df[f"stoch_{pair}"] = calculate_stochastic_oscillator(price_df[f"high_{pair}"], price_df[f"low_{pair}"], price_df[f"close_{pair}"])
 
         price_df["sol_btc_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_BTCUSDT")
         price_df["sol_eth_corr"] = calculate_cross_asset_correlation(price_df, "close_SOLUSDT", "close_ETHUSDT")
@@ -258,7 +268,7 @@ def load_frame(file_path, timeframe):
         ] + [
             f"{feature}_{pair}"
             for pair in ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-            for feature in ["rsi", "volatility", "macd"]
+            for feature in ["rsi", "volatility", "macd", "stoch"]
         ] + ["sol_btc_corr", "sol_eth_corr"]
 
         missing_features = [f for f in features if f not in df.columns]
@@ -315,7 +325,7 @@ def weighted_mztae(y_true, y_pred, weights):
         weights = np.maximum(weights, 1e-10) / np.sum(weights)
         return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
     except Exception as e:
-        print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
+        print(f"[{datetime.now()]] Error calculating weighted MZTAE: {str(e)}")
         return float('inf')
 
 def custom_directional_loss(y_true, y_pred):
@@ -529,6 +539,7 @@ def get_inference(token, timeframe, region, data_provider, features, cached_data
                 df[f"rsi_{pair}"] = calculate_rsi(df[f"close_{pair}"], periods=14)
                 df[f"volatility_{pair}"] = calculate_volatility(df[f"close_{pair}"], window=3)
                 df[f"macd_{pair}"] = calculate_macd(df[f"close_{pair}"])
+                df[f"stoch_{pair}"] = calculate_stochastic_oscillator(df[f"high_{pair}"], df[f"low_{pair}"], df[f"close_{pair}"])
 
             df["sol_btc_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_BTCUSDT")
             df["sol_eth_corr"] = calculate_cross_asset_correlation(df, "close_SOLUSDT", "close_ETHUSDT")
