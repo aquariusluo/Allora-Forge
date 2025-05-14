@@ -302,7 +302,7 @@ def generate_inference(token):
             f"Training R²: {model_metrics.get('train_r2', 0):.6f}\n"
             f"Test MAE (price change): {model_metrics.get('test_mae', 0):.6f}\n"
             f"Test RMSE (price change): {model_metrics.get('test_rmse', 0):.6f}\n"
-            f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n
+            f"Test R²: {model_metrics.get('test_r2', 0):.6f}\n"
             f"Directional Accuracy: {model_metrics.get('directional_accuracy', 0):.4f}\n"
             f"Correlation: {model_metrics.get('correlation', 0):.4f}, p-value: {model_metrics.get('correlation_p_value', 0):.4f}\n"
             f"Binomial Test p-value: {model_metrics.get('binom_p_value', 0):.4f}\n"
