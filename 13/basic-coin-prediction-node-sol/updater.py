@@ -62,24 +62,33 @@ def download_binance_daily_data(pair, training_days, region, output_path):
             url = f"https://data.binance.vision/data/spot/daily/klines/{pair}/1m/{pair}-1m-{date_str}.zip"
             output_file = os.path.join(output_path, f"{pair}-1m-{date_str}.zip")
             call_count += 1
-            try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    with open(output_file, "wb") as f:
-                        f.write(response.content)
-                    with zipfile.ZipFile(output_file, "r") as zip_ref:
-                        csv_file = zip_ref.namelist()[0]
-                        with zip_ref.open(csv_file) as f:
-                            df = pd.read_csv(f, header=None)
-                            rows = len(df)
-                            total_rows += rows
-                            logger.info(f"[{datetime.now()}] Downloaded {pair} for {date_str}: {rows} rows, call {call_count}")
-                    files.append(output_file)
-                else:
-                    logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}")
-                    failed_dates.append(date_str)
-            except requests.exceptions.RequestException as e:
-                logger.error(f"[{datetime.now()}] Error downloading {pair} for {date_str}: {str(e)}")
+            attempts = 0
+            max_attempts = 3
+            while attempts < max_attempts:
+                try:
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200:
+                        with open(output_file, "wb") as f:
+                            f.write(response.content)
+                        with zipfile.ZipFile(output_file, "r") as zip_ref:
+                            csv_file = zip_ref.namelist()[0]
+                            with zip_ref.open(csv_file) as f:
+                                df = pd.read_csv(f, header=None)
+                                rows = len(df)
+                                total_rows += rows
+                                logger.info(f"[{datetime.now()}] Downloaded {pair} for {date_str}: {rows} rows, call {call_count}, attempt {attempts + 1}")
+                        files.append(output_file)
+                        break
+                    else:
+                        logger.warning(f"[{datetime.now()}] Failed to download {pair} for {date_str}: HTTP {response.status_code}, attempt {attempts + 1}")
+                        attempts += 1
+                        time.sleep(1)
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"[{datetime.now()}] Error downloading {pair} for {date_str}: {str(e)}, attempt {attempts + 1}")
+                    attempts += 1
+                    time.sleep(1)
+            if attempts == max_attempts:
+                logger.error(f"[{datetime.now()}] Gave up downloading {pair} for {date_str} after {max_attempts} attempts")
                 failed_dates.append(date_str)
             current_date += timedelta(days=1)
             time.sleep(0.1)  # Avoid rate limits
