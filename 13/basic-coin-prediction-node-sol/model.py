@@ -14,7 +14,7 @@ from scipy.stats import pearsonr, binomtest
 import lightgbm as lgb
 from updater import download_binance_daily_data, download_binance_current_day_data, download_coingecko_data, download_coingecko_current_day_data
 from config import data_base_path, model_file_path, scaler_file_path, TOKEN, TIMEFRAME, TRAINING_DAYS, REGION, DATA_PROVIDER, MODEL, CG_API_KEY
-from datetime import datetime
+from datetime import datetime, timedelta
 
 binance_data_path = os.path.join(data_base_path, "binance")
 coingecko_data_path = os.path.join(data_base_path, "coingecko")
@@ -182,6 +182,10 @@ def format_data(files_btc, files_sol, files_eth, data_provider):
         if price_df_btc.empty or price_df_sol.empty or price_df_eth.empty:
             print(f"[{datetime.now()}] Error: Empty data for one or more pairs (BTC: {len(price_df_btc)}, SOL: {len(price_df_sol)}, ETH: {len(price_df_eth)})")
             return pd.DataFrame()
+
+        print(f"[{datetime.now()}] BTC date range: {price_df_btc.index.min()} to {price_df_btc.index.max()}")
+        print(f"[{datetime.now()}] SOL date range: {price_df_sol.index.min()} to {price_df_sol.index.max()}")
+        print(f"[{datetime.now()}] ETH date range: {price_df_eth.index.min()} to {price_df_eth.index.max()}")
 
         price_df_btc = price_df_btc.rename(columns=lambda x: f"{x}_BTCUSDT")
         price_df_sol = price_df_sol.rename(columns=lambda x: f"{x}_SOLUSDT")
