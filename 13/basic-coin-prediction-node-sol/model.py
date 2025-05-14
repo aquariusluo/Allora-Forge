@@ -325,7 +325,7 @@ def weighted_mztae(y_true, y_pred, weights):
         weights = np.maximum(weights, 1e-10) / np.sum(weights)
         return np.average(np.abs((y_true - y_pred) / ref_std), weights=weights)
     except Exception as e:
-        print(f"[{datetime.now()]] Error calculating weighted MZTAE: {str(e)}")
+        print(f"[{datetime.now()}] Error calculating weighted MZTAE: {str(e)}")
         return float('inf')
 
 def custom_directional_loss(y_true, y_pred):
